@@ -1,0 +1,51 @@
+BrowserDock for Windows 10/11 (Intel/AMD 64-bit)
+
+INSTALL (single bundle, no manual config editing)
+1. Double-click BrowserDock_<version>_x64-setup.exe.
+2. Follow the setup wizard, then launch BrowserDock from the Start menu.
+   The first launch creates %APPDATA%\BrowserDock\config.json and picks the
+   local companion port automatically. The companion extension ships inside
+   the installer (no separate download).
+3. Press Ctrl+Shift+Space to show the dock. Press Esc to hide it.
+   The system tray menu also offers Show/Hide and Exit.
+
+CONNECT YOUR BROWSERS (one-click pairing, ~2 minutes)
+Pick either path. Both avoid opening config.json by hand:
+
+  Path A — inside the app (recommended):
+  1. Open Settings (gear icon) > Connect your browsers.
+  2. Press "Stage companion folder", then "Copy code" for a browser
+     (or "Save pairing files" for all four at once).
+  3. Press "Open extensions" to jump to that browser's extensions page.
+
+  Path B — one script:
+  1. In the extracted dist folder, run:
+       powershell -NoProfile -ExecutionPolicy Bypass -File install-companion.ps1 -OpenBrowsers
+  2. This stages the companion and writes pairing files to
+     %APPDATA%\BrowserDock\pairing\.
+
+Then, in each browser (two clicks; browsers block fully silent installs):
+  Chrome/Edge : enable Developer mode > Load unpacked > pick the
+                companion\chromium folder, open the companion options and
+                choose Import (paste the code or pick the pairing file).
+  Firefox/Mullvad: open about:debugging#/runtime/this-firefox >
+                Load Temporary Add-on > companion\gecko\manifest.json,
+                then Import on the companion page. Temporary installs vanish
+                on browser restart; permanent installs need a Mozilla-signed
+                package. Mullvad needs the private-tabs opt-in (pre-checked).
+  Repeat per browser profile. If BrowserDock ever reports a port conflict,
+  re-copy the fresh code: the app picks the next free port automatically.
+
+You do not need Rust, Cargo, Node.js, or Visual Studio.
+The installer includes the offline Microsoft WebView2 runtime installer.
+The MSI is an alternative installer; use one installer format, not both.
+
+The current build is unsigned. Windows may display an unknown-publisher or
+SmartScreen warning. Verify the download source and SHA256SUMS.txt; if your
+organization blocks unsigned software, ask its administrator for an approved build.
+
+DATA AND UPDATES
+Your settings and encrypted vault are stored in %APPDATA%\BrowserDock.
+Exit BrowserDock using its tray menu before installing an update.
+Back up that folder before changing computers or reinstalling Windows.
+Uninstall BrowserDock through Windows Settings > Apps.

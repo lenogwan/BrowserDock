@@ -1,0 +1,39 @@
+:root { color-scheme: dark; font-family: 'Segoe UI', sans-serif; color: #ebe8dc; background: #181b19; }
+* { box-sizing: border-box; }
+body { margin: 0; border-top: 4px solid #ddbc70; }
+main { max-width: 660px; margin: 0 auto; padding: 44px 28px 28px; }
+.brand { display: flex; align-items: center; gap: 12px; font-weight: 650; letter-spacing: -.02em; }
+.mark { border: 1px solid #ddbc70; border-radius: 10px; padding: 9px 7px; color: #ddbc70; font-size: 13px; }
+.tag { margin-left: auto; color: #c2c6bd; letter-spacing: .13em; font: 10px Consolas, monospace; }
+.eyebrow { font: 11px Consolas, monospace; letter-spacing: .12em; color: #ddbc70; margin: 48px 0 16px; }
+h1 { font-family: Georgia, serif; font-size: clamp(32px, 7vw, 44px); line-height: 1.1; font-weight: 400; letter-spacing: -.03em; margin: 0; }
+.intro { color: #b5bcb2; line-height: 1.6; max-width: 510px; margin: 22px 0; }
+aside { background: #222722; border-left: 2px solid #798c72; padding: 15px 18px; font-size: 13px; line-height: 1.9; overflow-wrap: anywhere; color: #c6cec0; }
+code { font: 12px Consolas, monospace; color: #e3e8d9; }
+form { margin-top: 28px; }
+label { display: block; font-size: 13px; font-weight: 600; margin-bottom: 9px; }
+input, select, button { font: inherit; border-radius: 6px; }
+input, select { width: 100%; min-height: 46px; border: 1px solid #4a5147; color: #eeeede; background: #1d221d; padding: 11px 12px; }
+input::placeholder { color: #a8afa2; }
+:focus-visible { outline: 2px solid #ddbc70; outline-offset: 3px; }
+.import { margin-top: 28px; border: 1px solid #4a5147; border-radius: 10px; padding: 18px; background: #1d221d; }
+.import textarea { width: 100%; min-height: 76px; border: 1px solid #4a5147; color: #eeeede; background: #141814; padding: 11px 12px; border-radius: 6px; font: 12px Consolas, monospace; }
+.file-label { display: inline-flex; align-items: center; cursor: pointer; background: transparent; border: 1px solid #4a5147; color: #c0c8b8; padding: 12px 18px; border-radius: 6px; }
+.file-label:hover { filter: brightness(1.08); }
+#import-status { min-height: 20px; font-size: 13px; line-height: 1.5; color: #e0c78a; margin: 12px 0 0; }
+.fields { display: grid; grid-template-columns: 1fr 130px; gap: 18px; margin-top: 22px; }
+.help { font-size: 12px; color: #a9b3a3; margin: 8px 0 0; }
+.private-option { margin-top: 24px; }
+.private-option label { display: flex; align-items: center; gap: 10px; }
+.private-option input { width: 17px; min-height: 17px; margin: 0; accent-color: #ddbc70; }
+.private-option .help { line-height: 1.6; }
+.actions { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 26px; }
+button { cursor: pointer; background: #ddbc70; border: 1px solid #ddbc70; color: #20251e; padding: 12px 18px; font-weight: 650; }
+button:hover { filter: brightness(1.08); }
+button span { margin-left: 20px; }
+.secondary { color: #c0c8b8; background: transparent; border-color: #4a5147; font-weight: 400; }
+button:disabled { opacity: .6; cursor: wait; }
+#status { min-height: 20px; font-size: 13px; line-height: 1.5; color: #e0c78a; }
+footer { border-top: 1px solid #373e33; margin-top: 28px; padding-top: 22px; color: #a9b3a3; font-size: 11px; }
+.dot { display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: #a8bd93; margin-right: 8px; }
+@media (max-width: 440px) { main { padding: 28px 20px; } .fields { grid-template-columns: 1fr; } .eyebrow { margin-top: 34px; } }

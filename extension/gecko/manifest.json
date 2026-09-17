@@ -1,0 +1,43 @@
+{
+  "manifest_version": 3,
+  "name": "BrowserDock Companion",
+  "version": "1.0.3",
+  "description": "Connect this browser to BrowserDock on your computer to focus or open tabs.",
+  "permissions": [
+    "tabs",
+    "storage",
+    "alarms",
+    "contextualIdentities",
+    "cookies"
+  ],
+  "host_permissions": [
+    "http://127.0.0.1/*"
+  ],
+  "incognito": "spanning",
+  "options_ui": {
+    "page": "options.html",
+    "open_in_tab": true
+  },
+  "action": {
+    "default_title": "Pair with BrowserDock"
+  },
+  "content_security_policy": {
+    "extension_pages": "default-src 'self'; script-src 'self'; style-src 'self'; object-src 'none'; connect-src ws://127.0.0.1:*; base-uri 'none'; form-action 'none'"
+  },
+  "background": {
+    "scripts": [
+      "background.js"
+    ]
+  },
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "browserdock@browserdock.local",
+      "strict_min_version": "121.0",
+      "data_collection_permissions": {
+        "required": [
+          "browsingActivity"
+        ]
+      }
+    }
+  }
+}

@@ -1,0 +1,23 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "bundle": {
+    "targets": ["nsis", "msi"],
+    "shortDescription": "A floating dock for your browsers and private bookmarks",
+    "windows": {
+      "allowDowngrades": false,
+      "webviewInstallMode": {
+        "type": "offlineInstaller",
+        "silent": true
+      },
+      "nsis": {
+        "installMode": "currentUser",
+        "installerIcon": "icons/icon.ico",
+        "startMenuFolder": "BrowserDock"
+      },
+      "wix": {
+        "upgradeCode": "7b21c8a8-ba65-5b55-98ed-83fa9b64665b",
+        "language": "en-US"
+      }
+    }
+  }
+}

@@ -1,0 +1,36 @@
+name: Windows installers
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-2022
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+      - name: Set up Rust MSVC
+        shell: pwsh
+        run: |
+          rustup toolchain install stable --profile minimal
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          rustup default stable
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Test and build installers
+        shell: pwsh
+        run: ./scripts/build-windows.ps1
+      - name: Upload installers, companion, and checksums
+        uses: actions/upload-artifact@v4
+        with:
+          name: BrowserDock-windows-x64
+          path: dist/BrowserDock-*-windows-x64-*/
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 0

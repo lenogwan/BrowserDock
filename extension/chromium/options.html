@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Pair BrowserDock</title>
+    <link rel="stylesheet" href="options.css">
+    <script src="options.js" defer></script>
+  </head>
+  <body>
+    <main>
+      <div class="brand"><span class="mark" aria-hidden="true">BD</span> BrowserDock <span class="tag">COMPANION</span></div>
+      <p class="eyebrow">ONE COMPUTER. YOUR BROWSERS.</p>
+      <h1>Bring this browser<br>into the dock.</h1>
+      <p class="intro">Choose this browser, then import a pairing code or pairing file from BrowserDock's Settings → Connect your browsers. Pair each browser separately.</p>
+      <aside>One-click setup: in BrowserDock open <strong>Settings → Connect your browsers</strong>, press <strong>Copy code</strong> for this browser (or <strong>Save pairing files</strong>), then paste or import below. Manual entry still works.</aside>
+      <section class="import" aria-label="One-click pairing import">
+        <label for="pairing-code">Pairing code or file</label>
+        <textarea id="pairing-code" rows="3" spellcheck="false" autocomplete="off" placeholder="Paste BD1.… code, or open a browserdock-pairing-*.json file and paste its contents"></textarea>
+        <div class="actions">
+          <button type="button" id="import-code">Import pairing →</button>
+          <label class="file-label" for="pairing-file">Import file…<input id="pairing-file" type="file" accept=".json,application/json" hidden></label>
+        </div>
+        <p id="import-status" role="status" aria-live="polite"></p>
+      </section>
+      <form id="pairing-form">
+        <label for="browser">This browser</label>
+        <select id="browser" required>
+          <option value="">Choose a browser</option>
+          <option value="firefox">Firefox</option><option value="mullvad">Mullvad Browser</option>
+          <option value="chrome">Google Chrome</option><option value="edge">Microsoft Edge</option>
+        </select>
+        <div class="fields">
+          <div><label for="token">Pairing token</label><input id="token" type="password" required autocomplete="off" spellcheck="false" placeholder="Paste auth_token" aria-describedby="token-help"><p id="token-help" class="help">Stored only in this browser profile.</p></div>
+          <div><label for="port">Local port</label><input id="port" type="number" required min="1" max="65535" step="1" placeholder="ws_port" inputmode="numeric"></div>
+        </div>
+        <div class="private-option"><label for="include-private"><input id="include-private" type="checkbox" aria-describedby="private-help"> Include private / incognito tabs</label><p id="private-help" class="help">Off by default. Required for Mullvad Browser (always private) — without it the dock sees zero tabs and every open starts a new window. Also allow this extension in private / incognito windows in your browser’s extension settings. Private tab URLs and titles will be shared with BrowserDock on this computer.</p></div>
+        <div class="actions"><button type="submit">Save pairing <span aria-hidden="true">→</span></button><button type="button" id="disconnect" class="secondary">Forget pairing</button></div>
+        <p id="status" role="status" aria-live="polite"></p>
+      </form>
+      <p id="connection-status" role="status" aria-live="polite">Checking connection…</p>
+      <footer><span class="dot" aria-hidden="true"></span> Local connection · No telemetry · Private tabs require opt-in</footer>
+    </main>
+  </body>
+</html>

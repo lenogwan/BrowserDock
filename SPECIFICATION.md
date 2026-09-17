@@ -1,0 +1,386 @@
+# Product & Engineering Specification: BrowserDock
+
+**Document Version:** 1.1.0  
+**Target Platform:** Windows 10 / Windows 11 (x64 / ARM64)  
+**Architecture:** Tauri v2 (Rust Backend + Svelte 5 / Tailwind Frontend) + Universal WebExtension Companion  
+**Primary Goal:** Provide a lightweight, always-on-top floating dock and command palette that manages bookmarks, automatically routes URLs to designated browsers (Firefox, Mullvad, Chrome, Edge), focuses existing tabs across browsers, and protects sensitive sites with a PIN-locked encrypted vault.
+
+---
+
+## 1. Executive Architecture & Technology Choice
+
+### 1.1 Why Tauri v2 + Svelte 5 + Rust?
+Running 4 web browsers simultaneously (Firefox, Mullvad, Chrome, Edge) consumes gigabytes of memory. An always-on-top launcher must **never** be an Electron app (~200MB+ RAM overhead).
+* **Memory Footprint:** Tauri with WebView2 + Rust operates at **<35 MB RAM**.
+* **Native Windows Integration:** Rust provides direct access to Win32 APIs (`windows-rs`) for `SetForegroundWindow`, `BringWindowToTop`, registry querying for browser paths, and global hotkeys.
+* **Security & Crypto:** Rust's `ring` or `aes-gcm` combined with `argon2` provides hardware-accelerated, leak-proof AES-256-GCM encryption for the Private Vault.
+* **Reactive Frontend:** Svelte 5 with Tailwind CSS delivers instant UI responses (<16ms frame time) with zero virtual DOM overhead.
+
+### 1.2 High-Level System Architecture
+
+```mermaid
+flowchart TD
+    subgraph Desktop ["Windows Desktop"]
+        UI["Svelte 5 Floating UI (Always-on-Top / Mini-Dock)"]
+        Rust["Tauri v2 Rust Backend"]
+        WS["Embedded WebSocket Server (ws://127.0.0.1:49222)"]
+        Storage["Local Storage: config.json + vault.enc (AES-256)"]
+        Win32["Win32 API (Process Exec & Window Focus)"]
+    end
+
+    subgraph Browsers ["Target Browsers"]
+        FF["Firefox (Daily Driver)"]
+        MV["Mullvad (Privacy & Anonymity)"]
+        CH["Chrome (Specific Work Apps)"]
+        ED["Edge (VPN / Geo-Bypass)"]
+    end
+
+    subgraph Extension ["BrowserDock WebExtension"]
+        ExtFF["Gecko Extension (Firefox / Mullvad)"]
+        ExtCH["Chromium MV3 Extension (Chrome / Edge)"]
+    end
+
+    UI <-->|Tauri IPC Commands| Rust
+    Rust <-->|Crypto & JSON I/O| Storage
+    Rust -->|Spawns Process / Windows API| Win32
+    Win32 -->|Brings to Foreground| Browsers
+    Rust <-->|Bi-directional Status & Focus Commands| WS
+    WS <-->|WS Connection + Auth Token| ExtFF
+    WS <-->|WS Connection + Auth Token| ExtCH
+    ExtFF <-->|tabs.query / tabs.update| FF & MV
+    ExtCH <-->|tabs.query / tabs.update| CH & ED
+```
+
+---
+
+## 2. Functional Requirements & Features
+
+### 2.1 Always-On-Top Floating Dock & Summon Modes
+* **Dock Mode (Floating Pill):**
+  * Sleek, draggable, semi-transparent bar pinned to any screen edge or free-floating.
+  * Win32 Window Styles: `WS_EX_TOPMOST`, `WS_EX_TOOLWINDOW` (hide from Alt+Tab switcher; maps to Tauri `skipTaskbar: true`).
+  * Implemented window geometry is 400px wide x 56px high (authoritative values live in `src-tauri/tauri.conf.json`). Note: `transparent: true` is incompatible with native `shadow` on WebView2, so `shadow` MUST be `false`.
+  * Auto-hide option: Snaps to screen border and collapses into a thin indicator strip, expanding on mouse hover.
+* **Command Palette Mode (Quick Launcher):**
+  * Summoned via system-wide global hotkey (default: `Ctrl + Shift + Space`; `Alt + Space` is reserved by the Windows window-menu and MUST NOT be the default; `Win + Shift + B` remains an allowed alternative).
+  * Requires `tauri-plugin-global-shortcut` (backend) plus single-instance handling so a second launch summons the running dock.
+  * Instant cursor focus on search input. Pressing `Esc` once hides the window (see Panic Key for double-`Esc` behavior).
+
+### 2.2 Unified Search & Smart Routing
+* **Input Box:**
+  * Typing text filters bookmarks via fuzzy search (powered by `fuse.js` or Rust-side fuzzy matcher).
+  * Typing or pasting a URL directly parses domain and path.
+* **Automated Browser Dispatcher:**
+  * Every bookmark has an assigned browser target: `Firefox`, `Mullvad`, `Chrome`, `Edge`, or `Custom`.
+  * For typed URLs, **Domain Routing Rules** are evaluated in priority order (ascending: lower `priority` number wins; first match wins; ties broken by `id` ascending). Matching is case-insensitive on host; glob syntax supports `*` (any run) and `?` (single char), with `*://` matching any scheme. If no rule matches, the default fallback browser is `firefox`:
+    * Regex / Glob matching (e.g., `*.google.com`, `docs.google.com` -> Chrome; `*.onion`, `privacy-check.me` -> Mullvad; `*.geo-blocked.tv` -> Edge; default fallback -> Firefox).
+  * **Manual Hotkey Override:** User can override target browser before pressing Enter (e.g., `Alt+1` or `Alt+F` for Firefox, `Alt+2` or `Alt+M` for Mullvad, etc.).
+
+### 2.3 Tab Switching & Focus (The Companion Extension)
+* **Problem:** Windows OS can only bring a browser window to the front; it cannot read or switch internal browser tabs.
+* **Foreground caveat:** Win32 `SetForegroundWindow` is subject to the foreground-lock timeout and can fail when the dock is not the foreground process. The Rust helper MUST use the `AttachThreadInput` + `AllowSetForegroundWindow` + `ShowWindow(SW_RESTORE)` + `BringWindowToTop` best-effort sequence (see skill Phase 2); the extension's `windows.update({focused:true})` is the more reliable tab-bring-to-front path.
+* **Connection model:** each extension instance connects independently. The server keys connections by per-connection UUID carrying a claimed `browser` id (`firefox` | `mullvad` | `chrome` | `edge`); multiple instances may share one `browser` id (e.g. Firefox + Mullvad both Gecko). The server MUST NOT key the registry by bare `browser_id` alone.
+* **Solution:**
+  1. User selects or clicks a site (e.g., `github.com`).
+  2. BrowserDock queries the embedded WebSocket server: is any connected browser currently holding an open tab matching `github.com`?
+  3. **If Tab is Open:**
+     * The companion extension executes `chrome.tabs.update(tabId, { active: true })` and `chrome.windows.update(windowId, { focused: true })`.
+     * Rust calls Win32 `SetForegroundWindow(hwnd)` to ensure Windows OS switches focus immediately.
+  4. **If Tab is NOT Open:**
+     * If browser process is already running: Companion extension executes `chrome.tabs.create({ url })`.
+     * If browser process is NOT running: Rust launches the browser executable via `std::process::Command` passing CLI flags and URL.
+
+### 2.4 Private Vault (PIN-Protected Bookmarks)
+* **Visual Isolation:**
+  * The UI features a distinct "Vault" tab marked with a lock icon.
+  * In the locked state, private bookmarks are unmounted from the DOM, excluded from search, and their decrypted bytes plus derived keys are dropped/zeroized; only the `vault.enc` ciphertext bytes may remain.
+* **Browser identity:** Mullvad Browser spoofs `navigator.userAgent` for anti-fingerprinting, so extensions MUST NOT rely on UA sniffing. Each companion build (or user setting) MUST carry an explicit `browser` id.
+* **Encryption Scheme:**
+  * Master PIN / Passphrase is processed through **Argon2id** (memory-hard key derivation, recommended params: `m=19456 KiB (19 MiB), t=2, p=1`, 32-byte output; 16-byte random salt per vault).
+  * Data encrypted at rest using **AES-256-GCM** with a cryptographically secure random 96-bit nonce stored in `vault.enc`.
+  * Minimum vault secret length is 8 characters; short numeric-only PINs MUST be rejected at set-time because `vault.enc` is offline-brute-forceable (in-app lockout does not protect a copied file).
+* **Security Safeguards:**
+  * **Auto-Lock Timer:** Configurable timeout (default: 5 minutes, `vault_timeout_minutes` in `config.json`) of user inactivity locks the vault and purges plaintext keys from memory (zeroized).
+  * **Panic Key / Boss Key:** Pressing `Esc` once hides the window; pressing `Esc` twice within ~400 ms or a custom hotkey (`Ctrl + Alt + L`) immediately wipes memory state, closes any private launcher views, and re-locks the vault.
+  * **Zero Telemetry / Offline:** All operations run locally on `127.0.0.1`.
+
+---
+
+## 3. Data Schema & Specifications
+
+### 3.1 Configuration File (`config.json`)
+Location: `%APPDATA%/BrowserDock/config.json`
+
+```json
+{
+  "version": "1.1.0",
+  "settings": {
+    "always_on_top": true,
+    "global_shortcut": "Ctrl+Shift+Space",
+    "panic_shortcut": "Ctrl+Alt+L",
+    "theme": "dark",
+    "dock_position": {
+      "x": 100,
+      "y": 100,
+      "snapped": false
+    },
+    "auto_hide": false,
+    "vault_timeout_minutes": 5,
+    "ws_port": 49222,
+    "auth_token": "random_uuidv4_generated_on_first_run",
+    "hide_on_open": true,
+    "opacity": 1.0
+  },
+  "browsers": [
+    {
+      "id": "firefox",
+      "name": "Firefox",
+      "exe_path": "C:\\Program Files\\Mozilla Firefox\\firefox.exe",
+      "args": [
+        "-new-tab"
+      ],
+      "color": "#FF7139",
+      "extra_args": [],
+      "container": null
+    },
+    {
+      "id": "mullvad",
+      "name": "Mullvad Browser",
+      "exe_path": "C:\\Program Files\\Mullvad Browser\\mullvadbrowser.exe",
+      "args": [],
+      "color": "#218838",
+      "extra_args": [],
+      "container": null
+    },
+    {
+      "id": "chrome",
+      "name": "Google Chrome",
+      "exe_path": "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
+      "args": [],
+      "color": "#4285F4",
+      "extra_args": [],
+      "profile": null
+    },
+    {
+      "id": "edge",
+      "name": "Microsoft Edge",
+      "exe_path": "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe",
+      "args": [],
+      "color": "#0078D7",
+      "extra_args": [],
+      "profile": null
+    }
+  ],
+  "routing_rules": [
+    {
+      "id": "rule-1",
+      "pattern": "*://*.google.com/*",
+      "target_browser": "chrome",
+      "priority": 10
+    },
+    {
+      "id": "rule-2",
+      "pattern": "*://*.onion/*",
+      "target_browser": "mullvad",
+      "priority": 20
+    },
+    {
+      "id": "rule-3",
+      "pattern": "*://forbidden-site.org/*",
+      "target_browser": "edge",
+      "priority": 30
+    }
+  ],
+  "bookmarks": [
+    {
+      "id": "bm-1",
+      "title": "GitHub",
+      "url": "https://github.com",
+      "target_browser": "firefox",
+      "tags": [
+        "dev",
+        "daily"
+      ],
+      "icon": "github",
+      "group_id": "grp-work",
+      "sort_order": 0,
+      "browser_options": {
+        "profile": null,
+        "container": null,
+        "incognito": false
+      }
+    }
+  ],
+  "groups": [
+    {
+      "id": "grp-work",
+      "name": "Work",
+      "color": "#b8edc9",
+      "sort_order": 0,
+      "collapsed": false
+    }
+  ]
+}
+```
+
+Configuration versions `1.0.0` and `1.1.0` are accepted. Loading `1.0.0` first writes a byte-for-byte `config.json.bak.<timestamp>` backup, then saves version `1.1.0` with groups and bookmark order defaults. Unknown fields and unreadable bookmark entries remain on disk; unreadable entries produce a dock warning. Missing `hide_on_open` defaults to `true`; missing opacity defaults to `1.0`, and hand-edited values clamp to `0.3–1.0`. Settings saves reject out-of-range opacity.
+
+Groups are scoped to public or private bookmarks. Each scope allows at most 50 groups, names of 1–64 characters, optional hex colors, stable order and a collapsed flag. Missing/null `group_id` means Ungrouped, rendered last. Bookmark ordering uses `sort_order`, title, then ID. Deleting a group moves bookmarks to Ungrouped. Private groups and launch options are stored only in the vault.
+
+Browser defaults support `profile` for Chrome/Edge, `container` for Firefox/Mullvad, and `extra_args`. Bookmarks and routing rules may carry `browser_options: {profile?, container?, incognito?}`. Bookmark options take precedence over defaults; typed URLs use matching rule options before browser defaults. Empty profile/container values inherit defaults. Explicit browser overrides bypass routing rules. Names allow 1–128 ASCII letters, digits, spaces, underscores, dots and hyphens; `.` and `..` are invalid. Extra arguments allow at most 20 entries of 256 characters and reject shell metacharacters/control characters. Process arguments are always separate argv entries with the URL last.
+
+### 3.2 Encrypted Vault File (`vault.enc`)
+Location: `%APPDATA%/BrowserDock/vault.enc`
+
+Binary format (unchanged; the payload version is inside the ciphertext):
+* `[0..16]`: Salt for Argon2id (16 bytes, random per vault).
+* `[16..28]`: AES-GCM Nonce / IV (12 bytes, random per encryption).
+* `[28..N]`: AES-256-GCM ciphertext with the 16-byte auth tag appended (`ciphertext || tag`, as produced by `aes-gcm`). Decryption MUST fail closed on tag mismatch.
+
+The decrypted payload is `{ "version": 2, "bookmarks": [...], "groups": [...] }`. The reader also accepts legacy bookmark arrays and version-1 envelopes; legacy entries become Ungrouped with index ordering. The next successful mutation writes version 2 atomically. No salt/nonce/tag layout change occurs. Lock, timeout and failed mutations drop/zeroize private groups, options and bookmark strings as well as keys and plaintext buffers.
+
+---
+
+## 4. Inter-Process Communication (IPC) Protocol
+
+### 4.1 WebSocket Connection
+* The Rust backend binds to `127.0.0.1:{ws_port}` (`ws_port` from `config.json`, default `49222`; if occupied, try the next free port and log it — the port is authoritative from config, never hardcoded in the extension build).
+* When the companion extension loads, it initiates a WebSocket handshake, then MUST send within 5s:
+  * Headers / Initial Frame: `{ "type": "AUTH", "token": "<auth_token>", "browser": "firefox|mullvad|chrome|edge", "instance_id": "<uuidv4 per extension instance>" }`
+* The server MUST close unauthenticated/mistokened sockets without revealing whether the token or format was wrong. `auth_token` is a random UUIDv4 generated on first run (122-bit entropy); it is a local-only bearer secret, so `config.json` file permissions are part of the threat model.
+* Chromium and Gecko builds ship separate manifests (Chromium MV3 `background.service_worker` vs Gecko `background.scripts` + `browser_specific_settings.gecko`). A single manifest containing both keys is invalid and MUST NOT be used.
+
+### 4.2 Message Schemas
+
+#### A. Focus or Open Tab (Dock -> Extension)
+Authoritative field names (extensions and server MUST use exactly these):
+```json
+{
+  "id": "req-101",
+  "action": "FOCUS_OR_OPEN",
+  "url": "https://example.com",
+  "match_mode": "domain_or_exact",
+  "container": "work",
+  "profile": null
+}
+```
+
+`container` and `profile` are optional and additive. Gecko resolves a container name or cookie-store ID using `contextualIdentities`; existing tabs must also match that cookie store. A missing container returns `ERROR_CONTAINER_NOT_FOUND`, allowing a plain process open with a visible note. Edge also permits process fallback for `ERROR_NO_BROWSER_WINDOW`, sent only when the companion finds no eligible normal window before any tab operation. This safely handles a background-only Edge instance; no other browser API errors permit retry. Disconnected companions also permit this fallback. Ambiguous timeouts and unrelated browser API failures remain errors to avoid duplicate tabs. Private/incognito launches bypass companion reuse and start a new browser window.
+
+#### B. Close Tabs (Dock -> Extension)
+Same envelope with `"action": "CLOSE_TABS"`; `match_mode` accepts `domain_or_exact` or `exact` (`new_tab` is rejected). The extension closes every tab matching the focus candidate filters (exact URL first, then hostname; container-scoped on Gecko; private tabs need the same opt-in) with a single `tabs.remove` call and replies `{id, status: "SUCCESS", result: "CLOSED_TABS", closed: <n>}`. No match returns `ERROR_TAB_NOT_FOUND` without mutation. There is no process fallback for close: a missing companion or no matching tab is reported, never launched. Timeouts/disconnects are reported once and never retried, since the tabs may already be closed.
+
+Chrome/Edge profiles are passed as `--profile-directory=<directory>` before the URL on process launches. Companion profile hints do not enforce profile selection: tab reuse targets a connected instance. Install a companion in each profile; native warm-profile behavior remains browser dependent.
+
+#### B. Extension Response (Extension -> Dock)
+Authoritative shape (do not use bare `status: FOCUSED/OPENED`):
+```json
+{
+  "id": "req-101",
+  "status": "SUCCESS",
+  "result": "FOCUSED_EXISTING",
+  "window_id": 12,
+  "tab_id": 44
+}
+```
+`result` is one of `FOCUSED_EXISTING | OPENED_NEW_TAB | ERROR_*`.
+
+#### C. Tab Inventory Broadcast (Extension -> Dock)
+Sent on tab updates (debounced ≥500 ms, capped at 200 tabs per message, URLs truncated to 2 KB), allowing the dock UI to render an indicator on bookmarks that are currently open.
+```json
+{
+  "action": "TABS_SYNC",
+  "browser": "firefox",
+  "tabs": [
+    { "id": 44, "url": "https://github.com/pulls", "title": "Pull Requests", "cookieStoreId": "firefox-container-1" },
+    { "id": 52, "url": "https://news.ycombinator.com", "title": "Hacker News" }
+  ]
+}
+```
+
+Gecko inventory includes optional `cookieStoreId`; Chromium omits it. After authentication and on contextual-identity changes, Gecko sends `{ "action": "CONTAINERS_LIST", "containers": [{ "name": "work", "cookieStoreId": "firefox-container-1" }] }`. This local in-memory inventory provides container name hints; it is not written to config. Only Gecko requests `contextualIdentities` and `cookies` permissions (`cookies` is needed for cookie-store tab operations).
+
+### 4.2.1 Companion reliability extensions (v1.0.3)
+
+- `AUTH_OK` includes `capabilities: ["paged_tabs_v1"]`. Legacy companions ignore the field; new companions use legacy `TABS_SYNC` when it is absent.
+- `FOCUS_OR_OPEN` and `CLOSE_TABS` include optional `deadline_ms`, an absolute Unix timestamp in milliseconds, five seconds after dispatch. The companion checks expiry before issuing subsequent mutations and caps execution at five seconds after receipt. Queues belong to individual connections; a watchdog disconnects stalled commands. Expired queued commands return `ERROR_REQUEST_EXPIRED`; invalid deadlines return `ERROR_INVALID_REQUEST`. Already-issued browser API operations are irreversible and must never be retried automatically.
+- Negotiated inventory messages are `{action:"TABS_SYNC_PAGE",browser,snapshot_id,page,pages,tabs}`. `snapshot_id` is a UUID, pages are zero-based and ordered, each page has at most 200 tabs, and a snapshot has at most 10 pages/2,000 tabs. Non-final pages contain exactly 200 tabs. Empty inventories use one empty page. Duplicate tab IDs across pages, invalid bounds, or mismatched/out-of-order pages reject the connection. A partial snapshot must finish within five seconds; expiry is checked on page receipt. Only a validated final page atomically replaces the previous snapshot. The sender spaces snapshots by at least 500 ms; the server accepts every complete valid snapshot because transport stalls can compress arrival times. Starting page zero replaces any incomplete assembly. Legacy inventories cancel an incomplete assembly and retain their 200-tab limit.
+- Unchanged negotiated inventories are suppressed. Legacy-server inventories are periodically refreshed because older servers may silently drop closely arriving snapshots. Tab updates unrelated to URL/title/load status/container do not trigger inventory queries. All caches are in memory only; private opt-in and URL validation remain mandatory. Tabs above the bounded snapshot limit are excluded from routing hints.
+- The options page displays live status through same-extension `BROWSERDOCK_STATUS` messaging. Replies contain only a connection state. Pairing input is limited to 16 KB and stale asynchronous file imports cannot overwrite later user actions.
+
+### 4.3 Desktop commands
+
+The unused `detect_browsers` and `launch_url` desktop commands were removed during QA. Browser detection remains internal; `open_url` is the single desktop launch entry point. `dock_hide` and `dock_escape` return failures to the UI, and background window-operation failures emit `dock-error`. The frontend marks a successful post-launch hide only after the native operation succeeds.
+
+The desktop webview communicates via Tauri IPC only; its CSP grants no direct WebSocket access. Companion extensions retain `ws://127.0.0.1:*` for port fallback. Restrict `%APPDATA%\BrowserDock` using Windows user ACLs, never share the plaintext bearer token, and use a strong nonnumeric vault passphrase: copying ciphertext bypasses the app's retry lockout. DPAPI token wrapping remains a follow-up.
+
+Existing command names remain available. Tauri JavaScript arguments use camelCase.
+
+- `get_dock_data` includes public `groups`, `bookmarks`, `browsers`, public `settings`, and warnings; pairing secrets are excluded.
+- `vault_list` returns `{bookmarks, groups}`. The frontend also accepts the legacy bookmark-array response. Locked or cancelled sessions cannot read/mutate private data.
+- `save_group {group, private}`, `delete_group {id, private}`, and `move_bookmark {id, groupId, index, private}` persist within one scope. Index is clamped and order is renormalized.
+- `save_browser {browser}` updates an existing browser's executable, compatibility args, profile/container defaults and advanced extra arguments. All launch commands read current settings immediately.
+- `open_url {url, browserId?, forceNewTab?, bookmarkId?, bookmarkPrivate?}` resolves a stored bookmark's URL/options when supplied. `bookmarkPrivate` disambiguates IDs shared between scopes; omission searches public then unlocked vault. Result adds optional `note` for container fallback.
+- `close_tab {url, browserId?, exactMatch?, bookmarkId?, bookmarkPrivate?}` closes open tabs via the companion using the same bookmark resolution. Result is `{browser_id, result: CLOSED_TABS | TAB_NOT_FOUND, closed, note?}`. No companion, or no matching tab, is reported — never launched.
+- `route_url` still returns the browser ID. `route_details {url, browserId?, bookmarkId?, bookmarkPrivate?}` returns `{browser_id, profile, container, incognito}`.
+- `browser_profiles {browserId}` returns best-effort Chromium profile directories from Local State or connected Gecko container names; unavailable discovery yields an empty list.
+
+---
+
+## 5. User Experience & Interaction Design
+
+### 5.1 The Mini-Dock Widget
+* Dimensions: 400px wide x 56px high (authoritative values in `src-tauri/tauri.conf.json`; collapsed search bar with quick icons).
+* Visual Hierarchy:
+  1. **Left:** App / Shield Icon (Shows green when Vault is unlocked, grey when locked).
+  2. **Center:** Instant Search input with placeholder: `Type URL or search bookmarks...`
+  3. **Right:** Quick Browser indicator chips (`[F]`, `[M]`, `[C]`, `[E]`) + Vault Lock toggle.
+* **Keyboard Navigation:**
+  * `Down Arrow` / `Up Arrow`: Navigate search results.
+  * `Enter`: Open / focus with default or rule-based browser.
+  * `Shift + Enter`: Force open new tab instead of focusing existing.
+  * `Alt + F`: Route to Firefox.
+  * `Alt + M`: Route to Mullvad.
+  * `Alt + C`: Route to Chrome.
+  * `Alt + E`: Route to Edge.
+
+### 5.2 Visibility, opacity and organization
+
+`always_on_top` controls z-order only. `hide_on_open` (default true) hides after a successful launch. Turning it off clears the query/browser override, preserves expanded state and shows the target browser notice without stealing focus back. Failed launches stay visible. `auto_hide` independently collapses the idle dock to a strip; Escape and tray controls retain their behavior.
+
+Settings provides a 30–100% background-opacity slider in 5% steps, with an unsaved live preview. Save persists it; cancel discards the preview. Text and borders keep their opacity, and reduced-motion users see instant changes.
+
+The main dock window is resizable. `window_size.width` is clamped to 280–800 px (default 400); `window_size.height` is `null` for automatic content height or a manual value when explicitly resized/configured. Manual height applies to expanded panels only: Collapse always shrinks the native window to the 56px pill, and expanding restores the saved manual height. Startup also uses the pill height. The 6px auto-hide strip takes precedence over both modes. Size changes are applied live and persisted on commit, while cancel restores the last committed size. The resize grip is hidden in strip mode, and resizing preserves the snapped screen edge.
+
+An empty query displays collapsible group sections; search displays flat results with group badges and includes group names at low fuzzy weight. Drag bookmark rows onto group headers or insertion lines to move/reorder within the same scope; a failed write restores the prior order. BookmarkEditor also offers a Group select for touch and keyboard users. GroupEditor supports rename, color, deletion confirmation and up/down ordering; group-header dragging is not implemented. Locking unmounts private rows, groups and editors.
+
+BookmarkEditor offers contextual profile/container inputs and a private/incognito toggle. Advanced browser settings include default options and extra arguments. Resolved target labels include the profile or container. Container fallback notes remain visible even when the default post-open hide behavior is enabled, and appear on the next summon.
+
+### 5.3 The Vault Unlock Modal
+* Trigger: Clicking Lock icon or typing `/vault` into search.
+* Visual: Numeric keypad or PIN input with masking dots (`••••`).
+* Behavior:
+  * 3 consecutive invalid PINs trigger a 30-second lockout.
+  * Valid PIN derives AES key, decrypts `vault.enc`, and adds private bookmarks to the search list with a distinct badge.
+
+---
+
+## 6. Implementation Roadmap & Milestones
+
+1. **Milestone 1: Tauri Project Setup & Native Window Controls**
+   * Tauri v2 initialization with Svelte 5 and Tailwind CSS.
+   * Configure borderless window, always-on-top flags, and Win32 drag-region.
+2. **Milestone 2: Configuration & Process Launcher**
+   * Implement `config.json` reader/writer.
+   * Auto-detect default browser paths from Windows Registry (`HKEY_LOCAL_MACHINE\SOFTWARE\Clients\StartMenuInternet`).
+   * Implement CLI launcher with fallback execution.
+3. **Milestone 3: Companion WebExtension & WebSocket IPC**
+   * Build cross-browser WebExtension (Chromium MV3 build for Chrome/Edge + Gecko-compatible build for Firefox/Mullvad; two manifest variants — never one manifest with both `service_worker` and `scripts`).
+   * Implement Rust embedded WebSocket server on `127.0.0.1:{ws_port}` (default `49222`, with next-free-port fallback).
+   * Registry keyed by per-connection `instance_id` (not bare `browser_id`); enforce `AUTH` token; implement `FOCUS_OR_OPEN` command and window foregrounding via Win32 best-effort sequence (`AttachThreadInput` workaround).
+4. **Milestone 4: Private Vault & Crypto Engine**
+   * Implement Argon2id + AES-256-GCM encryption in Rust.
+   * Implement auto-lock countdown and panic key listener.
+5. **Milestone 5: Polish & Distribution**
+   * System tray integration (Show/Hide, Lock Vault, Settings, Exit).
+   * Windows `.msi` and portable `.exe` bundle generation.

@@ -1,0 +1,42 @@
+{
+  "name": "browserdock",
+  "version": "0.1.0",
+  "description": "BrowserDock - always-on-top multi-browser dock and dispatcher (Tauri v2 + Svelte 5)",
+  "type": "module",
+  "scripts": {
+    "dev": "vite dev",
+    "build": "vite build",
+    "preview": "vite preview",
+    "prepare": "svelte-kit sync || echo ''",
+    "check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
+    "check:watch": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json --watch",
+    "tauri": "tauri",
+    "package:windows": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-windows.ps1",
+    "build:extension": "node extension/build.mjs",
+    "package:extension": "node scripts/package-extension.mjs",
+    "test:extension": "node --test --test-isolation=none extension/test/*.test.mjs",
+    "test:ui": "node --test --test-isolation=none test/*.test.mjs"
+  },
+  "license": "MIT",
+  "dependencies": {
+    "@tauri-apps/api": "^2",
+    "@tauri-apps/plugin-global-shortcut": "^2",
+    "@tauri-apps/plugin-opener": "^2",
+    "fuse.js": "^7.0.0",
+    "lucide-svelte": "^0.469.0"
+  },
+  "devDependencies": {
+    "@sveltejs/adapter-static": "^3.0.10",
+    "@sveltejs/kit": "^2.65.1",
+    "@sveltejs/vite-plugin-svelte": "^7.1.2",
+    "@tauri-apps/cli": "^2",
+    "@types/node": "^22.10.0",
+    "autoprefixer": "^10.4.20",
+    "postcss": "^8.4.49",
+    "svelte": "^5.56.3",
+    "svelte-check": "^4.6.0",
+    "tailwindcss": "^3.4.17",
+    "typescript": "~5.9.0",
+    "vite": "^8.0.16"
+  }
+}
