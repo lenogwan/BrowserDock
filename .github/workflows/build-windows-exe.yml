@@ -1,0 +1,96 @@
+name: Build Windows EXE
+
+on:
+  push:
+    branches: [main, dev]
+  pull_request:
+    branches: [main, dev]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-windows-exe:
+    runs-on: windows-latest
+    timeout-minutes: 60
+    env:
+      CARGO_TARGET_DIR: ${{ github.workspace }}\src-tauri\target
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+
+      - name: Set up Rust stable (MSVC)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+
+      - name: Install frontend dependencies
+        shell: pwsh
+        run: npm ci
+
+      - name: Typecheck (svelte-check)
+        shell: pwsh
+        run: npm run check
+
+      - name: Frontend + extension tests
+        shell: pwsh
+        run: |
+          npm run test:ui
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          npm run build:extension
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          npm run test:extension
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Rust core tests
+        shell: pwsh
+        run: cargo test --locked --manifest-path src-tauri/core/Cargo.toml
+
+      - name: Build Tauri app (x64)
+        shell: pwsh
+        run: npm run tauri -- build --ci --target x86_64-pc-windows-msvc -- --locked
+
+      - name: Stage EXE, installers, and checksums
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $release = Join-Path $env:CARGO_TARGET_DIR 'x86_64-pc-windows-msvc\release'
+          $exe = Join-Path $release 'browserdock.exe'
+          if (-not (Test-Path $exe)) { throw "Expected EXE missing: $exe" }
+          $out = Join-Path $env:GITHUB_WORKSPACE 'dist\ci-exe'
+          New-Item -ItemType Directory -Path $out -Force | Out-Null
+          Copy-Item $exe -Destination $out
+          Get-ChildItem (Join-Path $release 'bundle\nsis') -Filter '*.exe' -File -ErrorAction SilentlyContinue | Copy-Item -Destination $out -Force
+          Get-ChildItem (Join-Path $release 'bundle\msi') -Filter '*.msi' -File -ErrorAction SilentlyContinue | Copy-Item -Destination $out -Force
+          if (Test-Path 'docs/INSTALL-WINDOWS.txt') { Copy-Item 'docs/INSTALL-WINDOWS.txt' -Destination $out }
+          if (Test-Path 'scripts/install-companion.ps1') { Copy-Item 'scripts/install-companion.ps1' -Destination $out }
+          Get-ChildItem $out -File | Sort-Object Name | ForEach-Object {
+            $hash = (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+            "$hash  $($_.Name)"
+          } | Set-Content (Join-Path $out 'SHA256SUMS.txt') -Encoding ascii
+          Get-ChildItem $out -File | Select-Object Name, Length
+
+      - name: Upload Windows EXE + installers
+        uses: actions/upload-artifact@v4
+        with:
+          name: BrowserDock-windows-x64-exe-${{ github.sha }}
+          path: dist/ci-exe/
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 0
