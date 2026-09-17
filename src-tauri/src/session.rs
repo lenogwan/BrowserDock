@@ -11,7 +11,7 @@ struct State {
 }
 #[derive(Default)]
 pub struct SessionGate(Mutex<State>);
-fn recover<T: Default>(result: Result<std::sync::MutexGuard<'_, T>, std::sync::PoisonError<std::sync::MutexGuard<'_, T>>>) -> std::sync::MutexGuard<'_, T> {
+fn recover<'a, T: Default>(result: Result<std::sync::MutexGuard<'a, T>, std::sync::PoisonError<std::sync::MutexGuard<'a, T>>>) -> std::sync::MutexGuard<'a, T> {
     result.unwrap_or_else(|error| error.into_inner())
 }
 impl SessionGate {
