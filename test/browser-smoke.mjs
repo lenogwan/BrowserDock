@@ -67,6 +67,14 @@ await page.addInitScript(() => {
       callbacks.get(id)?.({ event, payload: null });
   };
   window.__TAURI_EVENT_PLUGIN_INTERNALS__ = { unregisterListener: () => {} };
+  const isGoogleHost = (raw) => {
+    try {
+      const host = new URL(raw).hostname.toLowerCase();
+      return host === "google.com" || host.endsWith(".google.com");
+    } catch {
+      return false;
+    }
+  };
   window.__TAURI_INTERNALS__ = {
     metadata: { currentWindow: { label: "main" } },
     transformCallback(fn) {
@@ -167,7 +175,7 @@ await page.addInitScript(() => {
             error: null,
           };
         case "browser_profiles": return ["Default", "Ray"];
-        case "route_details": return {browser_id:args.browserId || (args.url.includes("google.com")?"chrome":"firefox"),profile:args.browserId?null:"Ray"};
+        case "route_details": return {browser_id:args.browserId || (isGoogleHost(args.url)?"chrome":"firefox"),profile:args.browserId?null:"Ray"};
         case "save_group": {const i=groups.findIndex(g=>g.id===args.group.id);if(i<0)groups.push(args.group);else groups[i]=args.group;return;}
         case "move_bookmark": {
           if(window.testState.failMove)throw new Error("Move rejected");
@@ -176,7 +184,7 @@ await page.addInitScript(() => {
         case "route_url":
           return (
             args.browserId ||
-            (args.url.includes("google.com") ? "chrome" : "firefox")
+            (isGoogleHost(args.url) ? "chrome" : "firefox")
           );
         case "open_url":
           return {
