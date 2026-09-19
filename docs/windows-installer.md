@@ -1,16 +1,20 @@
 # Windows installer builds
 
 The Windows configuration produces an NSIS setup `.exe` for the current user and
-an MSI alternative. Both embed the offline WebView2 installer, so end users need
-no developer tools or installation-time download. This makes the packages larger
-than the app itself. See [Tauri's installer documentation](https://v2.tauri.app/distribute/windows-installer/).
+an MSI alternative. Both use the WebView2 download bootstrapper, which fetches
+the WebView2 runtime at install time — this keeps the packages small (roughly
+the app itself plus a small stub) but requires internet access during
+installation. If you need fully offline installation, switch
+`webviewInstallMode.type` back to `offlineInstaller` in
+`src-tauri/tauri.windows.conf.json` at the cost of ~200MB per package.
+See [Tauri's installer documentation](https://v2.tauri.app/distribute/windows-installer/).
 
 ## Build using GitHub Actions
 
-Once this project is in a GitHub repository, select **Actions > Windows installers
-> Run workflow**. Download **BrowserDock-windows-x64** from the completed run's
-Artifacts section and extract it. The workflow tests and builds on Windows; it
-does not publish a release. Artifacts expire after 30 days, so copy the files to
+Every push to `main`/`dev` builds on Windows via the `Build Windows EXE`
+workflow. Download the `BrowserDock-windows-x64-exe-<sha>` artifact from the
+completed run. Pushing a `v*` tag additionally publishes a GitHub Release with
+the installers attached. Artifacts expire after 30 days, so copy the files to
 your distribution location before then.
 
 ## Build on a Windows development machine

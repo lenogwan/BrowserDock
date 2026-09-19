@@ -5,10 +5,10 @@
     "shortDescription": "A floating dock for your browsers and private bookmarks",
     "windows": {
       "allowDowngrades": false,
-      "webviewInstallMode": {
-        "type": "offlineInstaller",
-        "silent": true
-      },
+        "webviewInstallMode": {
+          "type": "downloadBootstrapper",
+          "silent": true
+        },
       "nsis": {
         "installMode": "currentUser",
         "installerIcon": "icons/icon.ico",
