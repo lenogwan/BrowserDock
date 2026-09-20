@@ -68,8 +68,12 @@ impl Default for Config {
         settings.insert("global_shortcut".into(), json!("Ctrl+Shift+Space"));
         settings.insert("panic_shortcut".into(), json!("Ctrl+Alt+L"));
         settings.insert("theme".into(), json!("dark"));
-        settings.insert("dock_position".into(), json!({"x":100,"y":100,"snapped":false}));
+        settings.insert(
+            "dock_position".into(),
+            json!({"x":100,"y":100,"snapped":false}),
+        );
         settings.insert("auto_hide".into(), json!(false));
+        settings.insert("auto_tab_groups".into(), json!(true));
         settings.insert("hide_on_open".into(), json!(true));
         settings.insert("opacity".into(), json!(1.0));
         settings.insert("window_size".into(), json!({"width":400,"height":null}));
@@ -86,12 +90,21 @@ impl Default for Config {
                 ("rule-3", "*://forbidden-site.org/*", "edge", 30),
                 ("rule-4", "*://*.forbidden-site.org/*", "edge", 30),
                 ("rule-5", "check.torproject.org", "mullvad", 20),
-            ].into_iter().map(|(id, pattern, target_browser, priority)| RoutingRule {
-                id: id.into(), pattern: pattern.into(), target_browser: target_browser.into(), priority, extra: Map::new(),
-            }).collect(),
+            ]
+            .into_iter()
+            .map(|(id, pattern, target_browser, priority)| RoutingRule {
+                id: id.into(),
+                pattern: pattern.into(),
+                target_browser: target_browser.into(),
+                priority,
+                extra: Map::new(),
+            })
+            .collect(),
             groups: vec![],
-            bookmarks: vec![json!({"id":"bm-1","title":"GitHub","url":"https://github.com",
-                "target_browser":"firefox","tags":["dev","daily"],"icon":"github"})],
+            bookmarks: vec![
+                json!({"id":"bm-1","title":"GitHub","url":"https://github.com",
+                "target_browser":"firefox","tags":["dev","daily"],"icon":"github"}),
+            ],
             extra: Map::new(),
         }
     }

@@ -20,7 +20,7 @@ Prebuilt installable packages (regenerate with `npm run package:extension`):
 
 Edit `src/`, then rebuild. Generated copies in both distributions are included alongside the source for direct loading. The build is deterministic and includes all scripts, styles and the pairing page.
 
-## Install and pair (one-click, no config.json editing)
+## Install and pair (no config.json editing)
 
 1. Install BrowserDock from the single Windows installer and launch it once
    (this creates `%APPDATA%\BrowserDock\config.json` and selects the port).
@@ -69,6 +69,14 @@ Inventory snapshots are coalesced at least 500 ms apart. Irrelevant tab-property
 Requests are serialized within each connection and IDs are remembered for its lifetime. A new connection has its own queue, so a stalled old API call cannot block recovery. The dock includes `deadline_ms` (Unix milliseconds) on open/close requests; the companion checks expiry before subsequent browser mutations and bounds execution to five seconds from receipt even when talking to an older dock. A watchdog disconnects a stalled command at its deadline. Expired queued requests return `ERROR_REQUEST_EXPIRED`. Already-issued browser API calls cannot be cancelled or safely retried. Duplicate IDs do not execute twice. Each connection permits 1024 remembered requests and 32 pending requests; exceeding either closes it to preserve bounded memory. Malformed or oversized incoming frames are ignored. Connection changes cancel remaining actions after the current browser API call completes; already-issued API calls cannot be undone. Deduplication is not persisted across browser/worker restarts, and the dock must never retry an ambiguous dispatched request as a new operation.
 
 Only pairing credentials and the private-access preference are written to `storage.local`. There are no content scripts, remote scripts, telemetry, or external messaging listeners. Extension connections are restricted by CSP to `ws://127.0.0.1:*`; the sole host permission is loopback HTTP. Requested `tabs`, `storage`, and `alarms` permissions support inventory, local pairing and reconnect. The `windows` API does not require a `windows` permission.
+
+## Native tab groups (v1.0.4)
+
+Reload both unpacked distributions after updating; the manifests now request `tabGroups` (view/manage native browser groups). Firefox 139+, Chrome and Edge expose the relevant APIs; feature checks retain ordinary-tab opening when APIs are unavailable or disabled. See the [Mozilla API reference](https://developer.mozilla.org/en-US/docs/Mozilla/Add-ons/WebExtensions/API/tabGroups) and [Chromium API reference](https://developer.chrome.com/docs/extensions/reference/api/tabGroups).
+
+The dock can automatically group individual bookmark opens, open a whole bookmark group, or close tabs in a matching native group. Group names/colors appear in the inventory. Match/reuse is by native title, window and compatible cookie store; IDs are not saved. Closing includes manually added members and observes private-tab opt-in/container filters. Batch errors can leave some tabs opened: no automatic retry is made. Legacy companions must be updated before batch actions work. See [SPEC §4.2.2](../SPECIFICATION.md#422-native-browser-tab-groups-companion-v104) for bounds, cancellation and fallback behavior.
+
+Native acceptance: verify create/join/title/color/collapse and close in Chrome, Edge and Firefox; test a disabled API, same-name groups in separate windows/containers, private-tab opt-in, vault lock during opening, and permission prompts on upgrade. Browser mocks and Windows compilation do not prove these behaviors.
 
 ## Manual Windows validation
 

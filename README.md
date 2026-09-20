@@ -2,7 +2,7 @@
 
 **BrowserDock** is an always-on-top floating dock for Windows that manages bookmarks, routes URLs to the right browser (Firefox, Mullvad, Chrome, Edge), focuses already-open tabs via a companion extension, and locks sensitive bookmarks in an encrypted vault.
 
-- **Desktop app:** Tauri v2 (Rust backend) + Svelte 5 / Tailwind CSS frontend. Lightweight (< 40 MB RAM).
+- **Desktop app:** Tauri v2 (Rust backend) + Svelte 5 / Tailwind CSS frontend. Memory target: < 40 MB RAM; native measurement pending.
 - **Companion extension:** one build for Chrome/Edge, one for Firefox/Mullvad; talks to the app over `ws://127.0.0.1`.
 - **Private vault:** Argon2id + AES-256-GCM, stored in `vault.enc`, auto-locks after inactivity.
 
@@ -127,7 +127,12 @@ Full details, private-tab opt-in, and limits: [`extension/README.md`](extension/
 
 Settings previews opacity until Save; Cancel restores the saved appearance. The three visibility settings are independent.
 
-Create groups using **G+**, move bookmarks by dragging or the editor's Group select, and use group editing controls to rename, reorder, or delete. Deleting a group keeps its bookmarks under Ungrouped. Search includes group names. Private groups are available only while the vault is unlocked.
+Create groups using **Add group**, move bookmarks by dragging or the editor's Group select, and use group editing controls to rename, reorder, or delete. Deleting a group keeps its bookmarks under Ungrouped. Search includes group names. Private groups are available only while the vault is unlocked.
+
+Grouped bookmarks automatically join a matching native browser tab group. Turn this off under **Settings → Behavior → Sync bookmark groups to browser tab groups**. Group headers offer **Open group in browser** and **Close group tabs**; rows display native group names/colors when reported by the companion. Explicit group opening works with the automatic setting off.
+
+Group actions support up to 50 bookmarks. Different browsers, profiles, or containers use separate batches; same-name groups in a browser window can be reused. Closing removes all eligible tabs in the matching native group, including tabs you added manually. A partial failure is reported without retrying. Update/reload the companion to v1.0.4 and accept its new `tabGroups` permission. Unsupported browsers open regular tabs with a notice. Private/incognito launch options bypass native grouping.
+
 
 Use BookmarkEditor for Chrome/Edge profile directories (such as `Default` or `Profile 1`) and Firefox/Mullvad container names. Settings → Browsers configures defaults and advanced arguments. Per-bookmark choices override defaults. Container support needs the Gecko companion and enabled containers; an unavailable container opens normally with a note. Private/incognito opens a new window and bypasses tab reuse.
 
@@ -143,7 +148,7 @@ Keep `%APPDATA%\BrowserDock` restricted to your Windows user account using its f
 npm run check            # Svelte + TypeScript diagnostics
 npm run test:ui          # frontend search/URL unit tests
 npm run test:extension   # companion protocol tests (also: npm run build:extension first after editing extension/src)
-cargo test -p browserdock-launcher   # Rust routing/vault/server tests (Windows, needs cargo)
+cargo test --locked --manifest-path src-tauri/core/Cargo.toml  # Rust core tests; needs cargo
 ```
 
 ## Troubleshooting
@@ -163,7 +168,8 @@ cargo test -p browserdock-launcher   # Rust routing/vault/server tests (Windows,
 | :--- | :--- |
 | [`SPECIFICATION.md`](SPECIFICATION.md) | Authoritative architecture, schemas, IPC protocol |
 | [`PROGRESS.md`](PROGRESS.md) | Build status shared across AI agents |
-| [`BUGS.md`](BUGS.md) | Open bug report + fix plan (read before fixing) |
+| [`docs/README.md`](docs/README.md) | Task-specific references and historical plans |
+| [`BUGS.md`](BUGS.md) | Historical bug audit and resolutions |
 | [`extension/README.md`](extension/README.md) | Companion install, pairing, behavior limits |
 | [`docs/phase-6-7.md`](docs/phase-6-7.md) | Dock and vault usage notes |
 | [`.agents/skills/browser-dock-builder/SKILL.md`](.agents/skills/browser-dock-builder/SKILL.md) | Implementation skill (mirrored in `.codex/` and `.opencode/` — keep the 3 copies in sync) |

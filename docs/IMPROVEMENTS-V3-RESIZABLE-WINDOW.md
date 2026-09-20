@@ -1,6 +1,8 @@
 # Resizable Dock Window — Handover Spec for Implementing Agent
 
-**Status:** Draft for implementation (hand to next AI agent)
+> Historical design/audit record. Read [current status](../PROGRESS.md) first. Original checkboxes, line numbers, environment limits and proposed fixes below are not a current work queue; use SPECIFICATION for current contracts.
+
+**Status:** Implemented; retained design record. Native acceptance remains pending (see PROGRESS).
 **Date:** 2026-09-13
 **Base:** post-V2 tree (`config.json` version `"1.1.0"`, V2 settings `hide_on_open` + `opacity` present)
 **Scope:** 1 feature — user-resizable dock window (width + height). No crypto, protocol, or telemetry changes.

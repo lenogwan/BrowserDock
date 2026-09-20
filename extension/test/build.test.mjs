@@ -13,7 +13,7 @@ test('build produces complete distinct local-only Chromium and Gecko distributio
     const dir = join(output, browser);
     const manifest = JSON.parse(await readFile(join(dir, 'manifest.json'), 'utf8'));
     assert.equal(manifest.manifest_version, 3);
-    assert.deepEqual(manifest.permissions, browser === 'gecko' ? ['tabs', 'storage', 'alarms', 'contextualIdentities', 'cookies'] : ['tabs', 'storage', 'alarms']);
+    assert.deepEqual(manifest.permissions, browser === 'gecko' ? ['tabs', 'storage', 'alarms', 'tabGroups', 'contextualIdentities', 'cookies'] : ['tabs', 'storage', 'alarms', 'tabGroups']);
     assert.equal(manifest.incognito, 'spanning');
     assert.deepEqual(manifest.host_permissions, ['http://127.0.0.1/*']);
     assert.ok(manifest.content_security_policy.extension_pages.includes('connect-src ws://127.0.0.1:*'));

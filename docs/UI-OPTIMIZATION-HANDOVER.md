@@ -1,5 +1,7 @@
 # Handover Spec — BrowserDock UI Icon & Interface Optimization
 
+> Historical design/audit record. Read [current status](../PROGRESS.md) first. Original checkboxes, line numbers, environment limits and proposed fixes below are not a current work queue; use SPECIFICATION for current contracts.
+
 **Repo:** `/home/raywan/gemini` (Tauri v2 + Svelte 5 + Tailwind v3, Windows target)
 **Authoritative refs:** `SPECIFICATION.md` (§3–5), `docs/IMPROVEMENTS-V2.md`, skill `browser-dock-builder`
 **Status of this spec:** Phases A–C are implemented. Native Windows visual/accessibility and memory acceptance remain manual.
@@ -52,7 +54,7 @@ Resulting icon map (all `lucide-svelte`, already a dependency — add nothing):
 
 ---
 
-## Phase B — Remaining icon / a11y fixes (implement next, small scope)
+## Phase B — Original icon / a11y plan (implemented)
 
 1. **Icon-only buttons with `title` but no `aria-label`.** Tooltips don't reach screen readers/keyboards. Add matching `aria-label`s in `src/routes/+page.svelte`:
    - Settings button (`title="Settings"`, ~line 598).
@@ -62,7 +64,7 @@ Resulting icon map (all `lucide-svelte`, already a dependency — add nothing):
 4. **Adopt an icon-size scale** and normalize outliers: `12` row/group affordances · `14` panel-nav actions · `15` pill header · `18` hero (Open-URL row only). Do not resize for decoration — only align off-scale uses.
 5. **Group-header chevron alignment:** the new 12px chevrons sit in `.group-title` (flex, `gap:7px`) — confirm optical alignment with the 6px `.group-dot` at 400px width and after resize; adjust gap, not icon size.
 
-## Phase C — Interface optimization tracks (larger, propose-then-implement)
+## Phase C — Original interface plan (implemented)
 
 Pick up in priority order; keep each as a separately verifiable change:
 
@@ -83,7 +85,7 @@ Pick up in priority order; keep each as a separately verifiable change:
 - Double-`Esc` (≤400ms) panic-lock behavior untouched.
 - Browser badges stay letter monograms (`F M C E`) — do not swap to icons; the letters are hotkey mnemonics (`Alt+F/M/C/E`).
 
-## Verification (run after every change)
+## Verification for affected UI changes
 
 ```sh
 npm run check                                   # svelte-check: 0 errors, 0 warnings

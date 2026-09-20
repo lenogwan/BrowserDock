@@ -1,5 +1,7 @@
 # Pre-Handover Review — Bugs & Security (read before implementing IMPROVEMENTS-V2)
 
+> Historical design/audit record. Read [current status](../PROGRESS.md) first. Original checkboxes, line numbers, environment limits and proposed fixes below are not a current work queue; use SPECIFICATION for current contracts.
+
 ## Windows bookmark drag-and-drop fix — 2026-09-14
 
 The main webview now sets `dragDropEnabled: false`. Tauri's native file-drop handler defaults to enabled and must be disabled for frontend HTML5 drag-and-drop on Windows (confirmed in the installed Tauri configuration schema and Rust source). Browser-only smoke tests do not exercise this native interception. A regression checks the effective Windows window configuration, including platform overrides. Rebuild/reinstall the desktop executable to apply this window-creation setting; updating source files alone does not change an already installed binary.
@@ -65,7 +67,7 @@ Before release, run the native Windows checklist below, especially actual Firefo
 ### R5 · Firefox `windows.create({incognito})` still unverified (BUGS must-verify #2, now load-bearing for V2 item 4)
 - **Where:** `extension/src/core.js:204-216`.
 - If Firefox/Mullvad rejects `incognito`, the no-window path returns `ERROR_BROWSER_API` and `dispatch.rs` does **not** fall back to process launch — open fails outright.
-- **Fix before V2 containers:** test on Windows; on failure, catch and fall back to normal window or `launch_browser`. V2's container design inherits this path — decide fallback semantics now (`ERROR_CONTAINER_NOT_FOUND` → plain open, per V2 spec §4.5).
+- **Fix before V2 containers:** test on Windows; on failure, return an error; do not downgrade private-window creation to a normal window or retry ambiguous operations. V2's container design inherits this path — decide fallback semantics now (`ERROR_CONTAINER_NOT_FOUND` → plain open, per V2 spec §4.5).
 
 ### R6 · File-permission threat model is undocumented in-app (auth_token + vault.enc)
 - `auth_token` (UUID bearer) lives in plaintext `config.json`; any local process/user can read it and impersonate a companion (Origin check allows missing-Origin native clients — `ws_server.rs:334-348`). `vault.enc` is copyable for offline brute force (in-app 3-strikes/30 s does not transfer).

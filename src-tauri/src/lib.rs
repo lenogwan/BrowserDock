@@ -4,10 +4,10 @@
 //! - runtime/desktop own vault lifecycle, shortcuts, tray and window controls.
 
 mod desktop;
-mod runtime;
 mod organization;
-mod window_sizing;
+mod runtime;
 mod win32_helper;
+mod window_sizing;
 use browserdock_launcher as launcher;
 use tauri::Manager;
 
@@ -61,7 +61,11 @@ fn companion_status(state: tauri::State<'_, LauncherState>) -> CompanionStatus {
 
 fn current_config(app: &tauri::AppHandle) -> Result<launcher::config::Config, String> {
     if let Some(state) = app.try_state::<runtime::DesktopState>() {
-        return state.config.lock().map(|c| c.clone()).map_err(|_| "Configuration unavailable".into());
+        return state
+            .config
+            .lock()
+            .map(|c| c.clone())
+            .map_err(|_| "Configuration unavailable".into());
     }
     app.state::<LauncherState>().config.clone()
 }
@@ -72,27 +76,192 @@ fn selected_bookmark(
     id: Option<&str>,
     private: Option<bool>,
 ) -> Result<Option<launcher::vault::Bookmark>, String> {
-    let Some(id) = id else { return Ok(None); };
+    let Some(id) = id else {
+        return Ok(None);
+    };
     if private != Some(true) {
-        if let Some(value) = config.bookmarks.iter().find(|b| b.get("id").and_then(|v| v.as_str()) == Some(id)) {
-            let bookmark: launcher::vault::Bookmark = serde_json::from_value(value.clone()).map_err(|_| "Cannot read bookmark")?;
+        if let Some(value) = config
+            .bookmarks
+            .iter()
+            .find(|b| b.get("id").and_then(|v| v.as_str()) == Some(id))
+        {
+            let bookmark: launcher::vault::Bookmark =
+                serde_json::from_value(value.clone()).map_err(|_| "Cannot read bookmark")?;
             bookmark.validate()?;
             return Ok(Some(bookmark));
         }
-        if private == Some(false) { return Err("Bookmark no longer exists".into()); }
+        if private == Some(false) {
+            return Err("Bookmark no longer exists".into());
+        }
     }
-    let state = app.try_state::<runtime::DesktopState>().ok_or("Configuration unavailable")?;
+    let state = app
+        .try_state::<runtime::DesktopState>()
+        .ok_or("Configuration unavailable")?;
     let epoch = state.gate.ticket().ok_or("Vault is locked")?;
     let mut vault = state.vault.lock().map_err(|_| "Vault unavailable")?;
     let result = (|| {
-        if !state.gate.valid(epoch) { return Err("Vault is locked".into()); }
+        if !state.gate.valid(epoch) {
+            return Err("Vault is locked".into());
+        }
         let bookmarks = vault.list(std::time::Instant::now())?;
-        let selected = bookmarks.into_iter().find(|b| b.id == id).ok_or("Bookmark no longer exists")?;
-        if !state.gate.valid(epoch) { return Err("Vault is locked".into()); }
+        let selected = bookmarks
+            .into_iter()
+            .find(|b| b.id == id)
+            .ok_or("Bookmark no longer exists")?;
+        if !state.gate.valid(epoch) {
+            return Err("Vault is locked".into());
+        }
         Ok(Some(selected))
     })();
     runtime::notify_lock(app, &state, &mut vault);
     result
+}
+
+fn group_data(
+    app: &tauri::AppHandle,
+    config: &launcher::config::Config,
+    id: &str,
+    private: bool,
+) -> Result<(launcher::groups::Group, Vec<launcher::vault::Bookmark>), String> {
+    let (groups, bookmarks) = if private {
+        let state = app
+            .try_state::<runtime::DesktopState>()
+            .ok_or("Configuration unavailable")?;
+        let epoch = state.gate.ticket().ok_or("Vault is locked")?;
+        let mut vault = state.vault.lock().map_err(|_| "Vault unavailable")?;
+        let result = (|| {
+            if !state.gate.valid(epoch) {
+                return Err("Vault is locked".to_string());
+            }
+            let now = std::time::Instant::now();
+            let data = (vault.groups(now)?, vault.list(now)?);
+            if !state.gate.valid(epoch) {
+                return Err("Vault is locked".to_string());
+            }
+            Ok(data)
+        })();
+        runtime::notify_lock(app, &state, &mut vault);
+        result?
+    } else {
+        (
+            config.groups.clone(),
+            config
+                .bookmarks
+                .iter()
+                .filter_map(|v| serde_json::from_value::<launcher::vault::Bookmark>(v.clone()).ok())
+                .collect(),
+        )
+    };
+    let group = groups
+        .into_iter()
+        .find(|g| g.id == id)
+        .ok_or("Group no longer exists")?;
+    group.validate()?;
+    let mut bookmarks: Vec<_> = bookmarks
+        .into_iter()
+        .filter(|b| b.group_id.as_deref() == Some(id))
+        .collect();
+    bookmarks.sort_by(|a, b| {
+        a.sort_order
+            .cmp(&b.sort_order)
+            .then(a.title.cmp(&b.title))
+            .then(a.id.cmp(&b.id))
+    });
+    Ok((group, bookmarks))
+}
+
+fn group_guard(
+    app: &tauri::AppHandle,
+    private: bool,
+) -> Result<std::sync::Arc<dyn Fn() -> bool + Send + Sync>, String> {
+    let epoch = if private {
+        Some(
+            app.try_state::<runtime::DesktopState>()
+                .ok_or("Configuration unavailable")?
+                .gate
+                .ticket()
+                .ok_or("Vault is locked")?,
+        )
+    } else {
+        None
+    };
+    let handle = app.clone();
+    Ok(std::sync::Arc::new(move || {
+        let Some(epoch) = epoch else {
+            return true;
+        };
+        let Some(state) = handle.try_state::<runtime::DesktopState>() else {
+            return false;
+        };
+        if !state.gate.valid(epoch) {
+            return false;
+        }
+        let Ok(mut vault) = state.vault.lock() else {
+            return false;
+        };
+        let unlocked = !vault.status(std::time::Instant::now()).locked;
+        runtime::notify_lock(&handle, &state, &mut vault);
+        unlocked && state.gate.valid(epoch)
+    }))
+}
+
+#[tauri::command]
+async fn open_group(
+    app: tauri::AppHandle,
+    group_id: String,
+    private: bool,
+    browser_id: Option<String>,
+    state: tauri::State<'_, LauncherState>,
+) -> Result<launcher::dispatch::GroupOutcome, String> {
+    let guard = group_guard(&app, private)?;
+    let config = current_config(&app)?;
+    let (group, bookmarks) = group_data(&app, &config, &group_id, private)?;
+    let hint = launcher::ws_server::TabGroupHint::from(&group);
+    let outcome = launcher::dispatch::group_action_guarded(
+        &config,
+        state.companion.as_ref().ok(),
+        &bookmarks,
+        &hint,
+        browser_id.as_deref(),
+        false,
+        guard,
+    )
+    .await?;
+    if let Some(browser) = browser_id
+        .as_deref()
+        .or_else(|| bookmarks.last().map(|b| b.target_browser.as_str()))
+    {
+        let exe = config
+            .browsers
+            .iter()
+            .find(|b| b.id == browser)
+            .map(|b| b.exe_path.as_str());
+        win32_helper::bring_browser_to_front(browser, exe);
+    }
+    Ok(outcome)
+}
+
+#[tauri::command]
+async fn close_group_tabs(
+    app: tauri::AppHandle,
+    group_id: String,
+    private: bool,
+    state: tauri::State<'_, LauncherState>,
+) -> Result<launcher::dispatch::GroupOutcome, String> {
+    let guard = group_guard(&app, private)?;
+    let config = current_config(&app)?;
+    let (group, bookmarks) = group_data(&app, &config, &group_id, private)?;
+    let hint = launcher::ws_server::TabGroupHint::from(&group);
+    launcher::dispatch::group_action_guarded(
+        &config,
+        state.companion.as_ref().ok(),
+        &bookmarks,
+        &hint,
+        None,
+        true,
+        guard,
+    )
+    .await
 }
 
 #[tauri::command]
@@ -106,16 +275,30 @@ async fn open_url(
     state: tauri::State<'_, LauncherState>,
 ) -> Result<launcher::dispatch::LaunchOutcome, String> {
     let config = current_config(&app)?;
-    let private_launch = bookmark_id.as_ref().is_some_and(|id|
-        bookmark_private == Some(true) || (bookmark_private.is_none() && !config.bookmarks.iter().any(|b|
-            b.get("id").and_then(|v| v.as_str()) == Some(id.as_str()))));
+    let private_launch = bookmark_id.as_ref().is_some_and(|id| {
+        bookmark_private == Some(true)
+            || (bookmark_private.is_none()
+                && !config
+                    .bookmarks
+                    .iter()
+                    .any(|b| b.get("id").and_then(|v| v.as_str()) == Some(id.as_str())))
+    });
     let epoch = if private_launch {
-        Some(app.try_state::<runtime::DesktopState>().ok_or("Configuration unavailable")?
-            .gate.ticket().ok_or("Vault is locked")?)
-    } else { None };
+        Some(
+            app.try_state::<runtime::DesktopState>()
+                .ok_or("Configuration unavailable")?
+                .gate
+                .ticket()
+                .ok_or("Vault is locked")?,
+        )
+    } else {
+        None
+    };
     let bookmark = selected_bookmark(&app, &config, bookmark_id.as_deref(), bookmark_private)?;
     let input = bookmark.as_ref().map(|b| b.url.as_str()).unwrap_or(&url);
-    let selected = browser_id.as_deref().or_else(|| bookmark.as_ref().map(|b| b.target_browser.as_str()));
+    let selected = browser_id
+        .as_deref()
+        .or_else(|| bookmark.as_ref().map(|b| b.target_browser.as_str()));
     let options = bookmark.as_ref().and_then(|b| b.browser_options.as_ref());
     let mode = if force_new_tab.unwrap_or(false) {
         launcher::ws_server::MatchMode::NewTab
@@ -124,22 +307,58 @@ async fn open_url(
     };
     let handle = app.clone();
     let still_valid = std::sync::Arc::new(move || {
-        let Some(epoch) = epoch else { return true; };
-        let Some(state) = handle.try_state::<runtime::DesktopState>() else { return false; };
-        if !state.gate.valid(epoch) { return false; }
-        let Ok(mut vault) = state.vault.lock() else { return false; };
+        let Some(epoch) = epoch else {
+            return true;
+        };
+        let Some(state) = handle.try_state::<runtime::DesktopState>() else {
+            return false;
+        };
+        if !state.gate.valid(epoch) {
+            return false;
+        }
+        let Ok(mut vault) = state.vault.lock() else {
+            return false;
+        };
         let unlocked = !vault.status(std::time::Instant::now()).locked;
         runtime::notify_lock(&handle, &state, &mut vault);
         unlocked && state.gate.valid(epoch)
     });
-    let outcome = launcher::dispatch::open_url_with_options_guarded(&config, state.companion.as_ref().ok(), input, selected, mode, options, still_valid).await?;
+    let group = if launcher::settings::Settings::from_config(&config).auto_tab_groups {
+        bookmark
+            .as_ref()
+            .and_then(|b| b.group_id.as_deref())
+            .map(|id| {
+                group_data(&app, &config, id, private_launch)
+                    .map(|(g, _)| launcher::ws_server::TabGroupHint::from(&g))
+            })
+            .transpose()?
+    } else {
+        None
+    };
+    let outcome = launcher::dispatch::open_url_with_group_guarded(
+        &config,
+        state.companion.as_ref().ok(),
+        input,
+        selected,
+        mode,
+        launcher::dispatch::LaunchHints {
+            options,
+            tab_group: group.as_ref(),
+        },
+        still_valid,
+    )
+    .await?;
     if outcome.result == "FOCUSED_EXISTING" || outcome.result == "OPENED_NEW_TAB" {
         // The companion activated the tab inside the browser, but on Windows a
         // background browser cannot pull its window past another app's window
         // (foreground lock). The dock was just clicked, so this process still
         // owns the foreground and may legally bring the browser forward.
         // Best-effort: a `false` return keeps the SUCCESS outcome unchanged.
-        let exe = config.browsers.iter().find(|b| b.id == outcome.browser_id).map(|b| b.exe_path.as_str());
+        let exe = config
+            .browsers
+            .iter()
+            .find(|b| b.id == outcome.browser_id)
+            .map(|b| b.exe_path.as_str());
         win32_helper::bring_browser_to_front(&outcome.browser_id, exe);
     }
     Ok(outcome)
@@ -156,16 +375,30 @@ async fn close_tab(
     state: tauri::State<'_, LauncherState>,
 ) -> Result<launcher::dispatch::CloseOutcome, String> {
     let config = current_config(&app)?;
-    let private_launch = bookmark_id.as_ref().is_some_and(|id|
-        bookmark_private == Some(true) || (bookmark_private.is_none() && !config.bookmarks.iter().any(|b|
-            b.get("id").and_then(|v| v.as_str()) == Some(id.as_str()))));
+    let private_launch = bookmark_id.as_ref().is_some_and(|id| {
+        bookmark_private == Some(true)
+            || (bookmark_private.is_none()
+                && !config
+                    .bookmarks
+                    .iter()
+                    .any(|b| b.get("id").and_then(|v| v.as_str()) == Some(id.as_str())))
+    });
     let epoch = if private_launch {
-        Some(app.try_state::<runtime::DesktopState>().ok_or("Configuration unavailable")?
-            .gate.ticket().ok_or("Vault is locked")?)
-    } else { None };
+        Some(
+            app.try_state::<runtime::DesktopState>()
+                .ok_or("Configuration unavailable")?
+                .gate
+                .ticket()
+                .ok_or("Vault is locked")?,
+        )
+    } else {
+        None
+    };
     let bookmark = selected_bookmark(&app, &config, bookmark_id.as_deref(), bookmark_private)?;
     let input = bookmark.as_ref().map(|b| b.url.as_str()).unwrap_or(&url);
-    let selected = browser_id.as_deref().or_else(|| bookmark.as_ref().map(|b| b.target_browser.as_str()));
+    let selected = browser_id
+        .as_deref()
+        .or_else(|| bookmark.as_ref().map(|b| b.target_browser.as_str()));
     let options = bookmark.as_ref().and_then(|b| b.browser_options.as_ref());
     let mode = if exact_match.unwrap_or(false) {
         launcher::ws_server::MatchMode::Exact
@@ -174,15 +407,32 @@ async fn close_tab(
     };
     let handle = app.clone();
     let still_valid = std::sync::Arc::new(move || {
-        let Some(epoch) = epoch else { return true; };
-        let Some(state) = handle.try_state::<runtime::DesktopState>() else { return false; };
-        if !state.gate.valid(epoch) { return false; }
-        let Ok(mut vault) = state.vault.lock() else { return false; };
+        let Some(epoch) = epoch else {
+            return true;
+        };
+        let Some(state) = handle.try_state::<runtime::DesktopState>() else {
+            return false;
+        };
+        if !state.gate.valid(epoch) {
+            return false;
+        }
+        let Ok(mut vault) = state.vault.lock() else {
+            return false;
+        };
         let unlocked = !vault.status(std::time::Instant::now()).locked;
         runtime::notify_lock(&handle, &state, &mut vault);
         unlocked && state.gate.valid(epoch)
     });
-    launcher::dispatch::close_url_with_options_guarded(&config, state.companion.as_ref().ok(), input, selected, mode, options, still_valid).await
+    launcher::dispatch::close_url_with_options_guarded(
+        &config,
+        state.companion.as_ref().ok(),
+        input,
+        selected,
+        mode,
+        options,
+        still_valid,
+    )
+    .await
 }
 
 #[tauri::command]
@@ -195,14 +445,22 @@ fn route_details(
 ) -> Result<launcher::RouteDetails, String> {
     let config = current_config(&app)?;
     let bookmark = selected_bookmark(&app, &config, bookmark_id.as_deref(), bookmark_private)?;
-    launcher::route_details(&config,
+    launcher::route_details(
+        &config,
         bookmark.as_ref().map(|b| b.url.as_str()).unwrap_or(&url),
-        browser_id.as_deref().or_else(|| bookmark.as_ref().map(|b| b.target_browser.as_str())),
-        bookmark.as_ref().and_then(|b| b.browser_options.as_ref()))
+        browser_id
+            .as_deref()
+            .or_else(|| bookmark.as_ref().map(|b| b.target_browser.as_str())),
+        bookmark.as_ref().and_then(|b| b.browser_options.as_ref()),
+    )
 }
 
 #[tauri::command]
-async fn browser_profiles(app: tauri::AppHandle, browser_id: String, state: tauri::State<'_, LauncherState>) -> Result<Vec<String>, String> {
+async fn browser_profiles(
+    app: tauri::AppHandle,
+    browser_id: String,
+    state: tauri::State<'_, LauncherState>,
+) -> Result<Vec<String>, String> {
     let config = current_config(&app)?;
     Ok(launcher::browser_profiles(&config, state.companion.as_ref().ok(), &browser_id).await)
 }
@@ -303,13 +561,20 @@ struct CompanionInstall {
 }
 fn copy_dir_recursive(source: &std::path::Path, dest: &std::path::Path) -> Result<(), String> {
     std::fs::create_dir_all(dest).map_err(|e| format!("Cannot stage companion: {e}"))?;
-    for entry in std::fs::read_dir(source).map_err(|e| format!("Cannot read bundled companion: {e}"))? {
+    for entry in
+        std::fs::read_dir(source).map_err(|e| format!("Cannot read bundled companion: {e}"))?
+    {
         let entry = entry.map_err(|e| format!("Cannot read bundled companion: {e}"))?;
         let target = dest.join(entry.file_name());
-        if entry.file_type().map_err(|e| format!("Cannot read bundled companion: {e}"))?.is_dir() {
+        if entry
+            .file_type()
+            .map_err(|e| format!("Cannot read bundled companion: {e}"))?
+            .is_dir()
+        {
             copy_dir_recursive(&entry.path(), &target)?;
         } else {
-            std::fs::copy(entry.path(), &target).map_err(|e| format!("Cannot stage companion: {e}"))?;
+            std::fs::copy(entry.path(), &target)
+                .map_err(|e| format!("Cannot stage companion: {e}"))?;
         }
     }
     Ok(())
@@ -318,10 +583,7 @@ fn copy_dir_recursive(source: &std::path::Path, dest: &std::path::Path) -> Resul
 /// Locate a bundled companion flavor (`chromium`/`gecko`) by its manifest.
 /// Tries explicit layouts first, then scans each base dir up to 3 levels deep
 /// so any bundler layout (flat, `extension/`, `companion/`) resolves.
-fn find_companion_flavor(
-    bases: &[std::path::PathBuf],
-    flavor: &str,
-) -> Option<std::path::PathBuf> {
+fn find_companion_flavor(bases: &[std::path::PathBuf], flavor: &str) -> Option<std::path::PathBuf> {
     for base in bases {
         for candidate in [
             base.join(flavor),
@@ -462,6 +724,8 @@ pub fn run() {
             organization::save_browser,
             open_url,
             close_tab,
+            open_group,
+            close_group_tabs,
             companion_status,
             companion_tabs_digest,
             pairing_export,

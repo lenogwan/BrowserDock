@@ -1,6 +1,8 @@
 # BrowserDock Improvements V2 — Handover Spec for Implementing Agent
 
-**Status:** Draft for implementation (hand to next AI agent)
+> Historical design/audit record. Read [current status](../PROGRESS.md) first. Original checkboxes, line numbers, environment limits and proposed fixes below are not a current work queue; use SPECIFICATION for current contracts.
+
+**Status:** Implemented; retained design record. Native acceptance remains pending (see PROGRESS).
 **Date:** 2026-09-13
 **Base version:** `0.1.0` (`SPECIFICATION.md` v1.0.0, `config.json` version `"1.0.0"`)
 **Scope:** 4 user-reported items. No crypto-scheme changes. No telemetry changes (all traffic stays on `127.0.0.1`).

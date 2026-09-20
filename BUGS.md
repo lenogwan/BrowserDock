@@ -1,5 +1,7 @@
 # BrowserDock Bug Report + Fix Plan (shared by all agents)
 
+> Historical design/audit record. Read [current status](PROGRESS.md) first. Original checkboxes, line numbers, environment limits and proposed fixes below are not a current work queue; use SPECIFICATION for current contracts.
+
 Latest QA resolutions and remaining native release gates are tracked in [PRE-HANDOVER-REVIEW.md](docs/PRE-HANDOVER-REVIEW.md). The historical verification counts below describe the earlier audit, not the latest release candidate.
 
 > For Antigravity (`.agents/`), Codex CLI (`.codex/`), OpenCode (`.opencode/`) — read before fixing.
@@ -93,7 +95,7 @@ Latest QA resolutions and remaining native release gates are tracked in [PRE-HAN
 
 ## Must-verify on Windows (not bugs yet, need a Windows run)
 1. `cargo test -p browserdock-launcher` (suites: `phase3/4/6`, `session`, `companion_live`) — unrunnable here.
-2. `windows.create({ incognito })` support in Firefox/Mullvad (`extension/src/core.js:209`) — if unsupported, Mullvad's no-window path returns `ERROR_BROWSER_API` and (by design, `dispatch.rs`) does NOT fall back to process launch. Confirm behavior; if it fails, catch and fall back to a normal window or `launch_browser`.
+2. `windows.create({ incognito })` support in Firefox/Mullvad (`extension/src/core.js:209`) — if unsupported, Mullvad's no-window path returns `ERROR_BROWSER_API` and (by design, `dispatch.rs`) does NOT fall back to process launch. Confirm behavior; failed private-window creation must remain an error, never silently fall back to a normal window. See SPEC §4.2 for allowed fallback cases.
 3. Double-`Esc` panic timing: global `Escape` registration propagation vs fast second press (`desktop.rs:214-238`). If flaky, track first-`Esc` timestamp in backend state instead of relying on registration timing.
 4. `argon2::Block` import + `Params::new(19456, 2, 1, …)` compile/memory profile on target machines (`crypto.rs:10-23`).
 

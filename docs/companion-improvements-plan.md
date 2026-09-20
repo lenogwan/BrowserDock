@@ -1,6 +1,6 @@
 # Companion improvements
 
-Implement the six improvements approved after the extension review.
+Implemented reliability improvements and recorded validation; see SPECIFICATION §4 for the current protocol.
 
 1. Test reconnect isolation and expired commands; introduce connection-owned queues, bounded execution, and server-issued deadlines. Never retry ambiguous mutations.
 2. Test multi-page inventories, malformed pages and atomic replacement; negotiate pagination through AUTH_OK, preserve legacy snapshots, cap pages at 200 tabs and snapshots at 2,000 tabs.

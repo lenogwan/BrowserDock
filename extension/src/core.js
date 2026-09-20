@@ -89,7 +89,24 @@ export function safeUrl(value, maxBytes = 2048) {
   } catch { return null; }
 }
 
-export function inventory(tabs, includePrivate = false, limit = 200) {
+export const GROUP_COLORS = { grey: '#9aa0a6', blue: '#4285f4', red: '#ea4335', yellow: '#fbbc04', green: '#34a853', pink: '#ff8bcb', purple: '#a142f4', cyan: '#24c1e0', orange: '#fa903e' };
+export function nearestGroupColor(hex) {
+  if (typeof hex !== 'string' || !/^#(?:[a-f0-9]{3}|[a-f0-9]{6})$/i.test(hex)) return 'grey';
+  if (hex.length === 4) hex = '#' + [...hex.slice(1)].map(c => c + c).join('');
+  const rgb = value => [1, 3, 5].map(i => parseInt(value.slice(i, i + 2), 16));
+  const color = rgb(hex);
+  return Object.keys(GROUP_COLORS).sort((a, b) => {
+    const distance = name => rgb(GROUP_COLORS[name]).reduce((sum, v, i) => sum + (v - color[i]) ** 2, 0);
+    return distance(a) - distance(b);
+  })[0];
+}
+function validGroup(hint) {
+  return hint && typeof hint.name === 'string' && hint.name.trim().length > 0 && [...hint.name].length <= 64
+    && (hint.color == null || hint.color === '' || /^#(?:[a-f0-9]{3}|[a-f0-9]{6})$/i.test(hint.color))
+    && (hint.collapsed == null || typeof hint.collapsed === 'boolean');
+}
+
+export function inventory(tabs, includePrivate = false, limit = 200, groups = []) {
   const result = [];
   for (const tab of tabs) {
     if ((tab.incognito && includePrivate !== true) || !Number.isSafeInteger(tab.id) || tab.id < 0 || !safeUrl(tab.url, Infinity)) continue;
@@ -99,7 +116,8 @@ export function inventory(tabs, includePrivate = false, limit = 200) {
     if (end < encoded.length) while (end > 0 && (encoded[end] & 0xc0) === 0x80) end--;
     const url = encoded.length <= 2048 ? tab.url : new TextDecoder().decode(encoded.subarray(0, end));
     if (!safeUrl(url)) continue;
-    result.push({ id: tab.id, url, ...(typeof tab.cookieStoreId === 'string' && /^[A-Za-z0-9 _.-]{1,128}$/.test(tab.cookieStoreId) ? { cookieStoreId: tab.cookieStoreId } : {}), title: [...(typeof tab.title === 'string' ? tab.title : '')].slice(0, 256).join('') });
+    const group = groups.find(g => g.id === tab.groupId && g.windowId === tab.windowId);
+    result.push({ ...(group && Number.isSafeInteger(group.id) && group.id >= 0 ? { groupId: group.id, groupTitle: [...(group.title ?? '')].slice(0, 64).join(''), groupColor: Object.hasOwn(GROUP_COLORS, group.color) ? group.color : 'grey', groupCollapsed: !!group.collapsed } : {}), id: tab.id, url, ...(typeof tab.cookieStoreId === 'string' && /^[A-Za-z0-9 _.-]{1,128}$/.test(tab.cookieStoreId) ? { cookieStoreId: tab.cookieStoreId } : {}), title: [...(typeof tab.title === 'string' ? tab.title : '')].slice(0, 256).join('') });
     if (result.length === limit) break;
   }
   return result;
@@ -126,8 +144,9 @@ export class Companion {
       this.api.tabs[name].addListener(() => this.scheduleSync());
     }
     this.api.tabs.onUpdated.addListener((_id, change) => {
-      if (!change || ['url', 'title', 'status', 'cookieStoreId'].some(key => key in change)) this.scheduleSync();
+      if (!change || ['url', 'title', 'status', 'cookieStoreId', 'groupId'].some(key => key in change)) this.scheduleSync();
     });
+    for (const name of ['onCreated', 'onUpdated', 'onRemoved', 'onMoved']) this.api.tabGroups?.[name]?.addListener(() => this.scheduleSync());
     this.api.windows.onFocusChanged?.addListener(id => {
       if (Number.isSafeInteger(id) && id >= 0) this.recentWindows = [id, ...this.recentWindows.filter(w => w !== id)].slice(0, 100);
     });
@@ -173,6 +192,7 @@ export class Companion {
 
   requestError(ctx, request) {
     if (!this.current(ctx)) return 'ERROR_DISCONNECTED';
+    if (ctx.cancelled?.has(request.id)) return 'ERROR_REQUEST_CANCELLED';
     if (this.clock.now() >= request.expiresAt) return 'ERROR_REQUEST_EXPIRED';
     return null;
   }
@@ -183,14 +203,14 @@ export class Companion {
     let socket;
     try { socket = this.transport(`ws://127.0.0.1:${this.pairing.port}`); }
     catch { this.retry(); return; }
-    const ctx = { socket, pairing: this.pairing, authenticated: false, seen: new Map(), pending: 0, pong: this.clock.now(), syncDirty: false, queue: Promise.resolve(), commandTimers: new Set(), lastSnapshot: null, paged: false };
+    const ctx = { socket, pairing: this.pairing, authenticated: false, seen: new Map(), cancelled: new Set(), pending: 0, pong: this.clock.now(), syncDirty: false, queue: Promise.resolve(), commandTimers: new Set(), lastSnapshot: null, paged: false };
     this.connection = ctx;
     this.status = 'connecting';
     ctx.authTimer = this.clock.setTimeout(() => { if (this.connection === ctx) this.drop(ctx); }, 5000);
     socket.onopen = () => {
       if (this.connection !== ctx) return;
       this.status = 'authenticating';
-      this.send(ctx, { type: 'AUTH', token: ctx.pairing.token, browser: ctx.pairing.browser, instance_id: this.uuid() });
+      this.send(ctx, { type: 'AUTH', token: ctx.pairing.token, browser: ctx.pairing.browser, instance_id: this.uuid(), capabilities: ['tab_groups_v1'] });
     };
     socket.onmessage = event => this.receive(ctx, event.data);
     socket.onerror = () => this.drop(ctx);
@@ -231,9 +251,10 @@ export class Companion {
       }
       return;
     }
+    if (data.action === 'CANCEL_REQUEST') { if (ctx.seen.has(data.id) && ctx.seen.get(data.id) === null) ctx.cancelled.add(data.id); return; }
     if (data.action === 'CONTAINERS_LIST') { void this.syncContainers(ctx); return; }
     if (data.action === 'PONG') { ctx.pong = this.clock.now(); return; }
-    if ((data.action !== 'FOCUS_OR_OPEN' && data.action !== 'CLOSE_TABS') || typeof data.id !== 'string' || !data.id.length || data.id.length > 128) return;
+    if (!['FOCUS_OR_OPEN', 'CLOSE_TABS', 'OPEN_GROUP', 'CLOSE_GROUP'].includes(data.action) || typeof data.id !== 'string' || !data.id.length || data.id.length > 128) return;
     if (ctx.seen.has(data.id)) {
       const response = ctx.seen.get(data.id); if (response) this.send(ctx, response);
       return;
@@ -244,7 +265,7 @@ export class Companion {
     const now = this.clock.now();
     const invalidDeadline = data.deadline_ms !== undefined && (!Number.isSafeInteger(data.deadline_ms) || data.deadline_ms < 0);
     data.expiresAt = Math.min(now + 5000, data.deadline_ms ?? now + 5000);
-    const handler = data.action === 'CLOSE_TABS' ? 'close' : 'focus';
+    const handler = { CLOSE_TABS: 'close', FOCUS_OR_OPEN: 'focus', OPEN_GROUP: 'openGroup', CLOSE_GROUP: 'closeGroup' }[data.action];
     ctx.queue = ctx.queue.then(async () => {
       let response;
       let timer;
@@ -262,6 +283,7 @@ export class Companion {
       catch { response = { id: data.id, status: 'ERROR', result: 'ERROR_BROWSER_API' }; }
       finally { this.clock.clearTimeout(timer); ctx.commandTimers.delete(timer); }
       ctx.pending--;
+      ctx.cancelled.delete(data.id);
       ctx.seen.set(data.id, response);
       if (this.current(ctx)) { this.send(ctx, response); this.scheduleSync(); }
     });
@@ -285,7 +307,9 @@ export class Companion {
       ctx.syncDirty = false;
       try {
         const tabs = await this.api.tabs.query({});
-        const snapshot = inventory(tabs, ctx.pairing.includePrivate, ctx.paged ? 2000 : 200);
+        let groups = [];
+        try { groups = await this.api.tabGroups?.query({}) ?? []; } catch { /* Unsupported/disabled grouping. */ }
+        const snapshot = inventory(tabs, ctx.pairing.includePrivate, ctx.paged ? 2000 : 200, groups);
         const serialized = JSON.stringify(snapshot);
         // Older servers may silently throttle received snapshots. Keep their
         // periodic refreshes so a dropped update cannot remain stale forever.
@@ -331,6 +355,7 @@ export class Companion {
     for (const value of [request.container, request.profile]) {
       if (value != null && (typeof value !== 'string' || !/^[A-Za-z0-9 _.-]{1,128}$/.test(value) || value === '.' || value === '..')) return error('ERROR_INVALID_REQUEST');
     }
+    if (request.tab_group != null && !validGroup(request.tab_group)) return error('ERROR_INVALID_REQUEST');
     const target = safeUrl(request.url);
     if (!target || !['domain_or_exact', 'exact', 'new_tab'].includes(request.match_mode)) return error('ERROR_INVALID_REQUEST');
     if (this.requestError(ctx, request)) return error(this.requestError(ctx, request));
@@ -377,15 +402,17 @@ export class Companion {
       if (!found && request.match_mode === 'domain_or_exact') found = candidates.find(t => safeUrl(t.url, Infinity).hostname === target.hostname);
     }
     if (found) {
+      const note = await this.ensureTabGroup(ctx, request, [found]);
+      if (this.requestError(ctx, request)) return error(this.requestError(ctx, request));
       await this.api.tabs.update(found.id, { active: true });
       if (this.requestError(ctx, request)) return error(this.requestError(ctx, request));
       await this.api.windows.update(found.windowId, { focused: true });
-      return { id: request.id, status: 'SUCCESS', result: 'FOCUSED_EXISTING', window_id: found.windowId, tab_id: found.id };
+      return { id: request.id, status: 'SUCCESS', result: 'FOCUSED_EXISTING', note, window_id: found.windowId, tab_id: found.id };
     }
     // Edge may retain background-only/stale windows after its visible UI has
     // closed. Do not attempt tabs.create in that state; the desktop launcher
     // can start/forward the URL reliably. This response is pre-mutation.
-    if (ctx.pairing.browser === 'edge') return error('ERROR_NO_BROWSER_WINDOW');
+    if (ctx.pairing.browser === 'edge' && !request.tab_group) return error('ERROR_NO_BROWSER_WINDOW');
     const windows = edgeWindows ?? await this.api.windows.getAll({ windowTypes: ['normal'] });
     if (this.requestError(ctx, request)) return error(this.requestError(ctx, request));
     const preferPrivate = includePrivate && ctx.pairing.browser === 'mullvad';
@@ -411,8 +438,109 @@ export class Companion {
     }
     if (!created || !Number.isSafeInteger(created.id) || !Number.isSafeInteger(created.windowId)) return error('ERROR_BROWSER_API');
     if (this.requestError(ctx, request)) return error(this.requestError(ctx, request));
+    const note = await this.ensureTabGroup(ctx, request, [created]);
+    if (this.requestError(ctx, request)) return error(this.requestError(ctx, request));
     await this.api.windows.update(created.windowId, { focused: true });
-    return { id: request.id, status: 'SUCCESS', result: 'OPENED_NEW_TAB', window_id: created.windowId, tab_id: created.id };
+    return { id: request.id, status: 'SUCCESS', result: 'OPENED_NEW_TAB', note, window_id: created.windowId, tab_id: created.id };
+  }
+
+  checkRequest(ctx, request) {
+    const failure = this.requestError(ctx, request);
+    if (failure) throw new Error(failure);
+  }
+
+  async ensureTabGroup(ctx, request, tabs) {
+    const hint = request.tab_group;
+    if (!hint) return undefined;
+    if (!this.api.tabGroups?.query || !this.api.tabGroups?.update || !this.api.tabs.group)
+      return 'Tab groups unavailable; opened regular tabs';
+    try {
+      const windowId = tabs[0].windowId;
+      const groups = await this.api.tabGroups.query({ windowId });
+      this.checkRequest(ctx, request);
+      // Never combine container identities, or mutate shared groups.
+      const all = await this.api.tabs.query({ windowId });
+      this.checkRequest(ctx, request);
+      const store = tabs[0].cookieStoreId;
+      const existing = groups.find(g => g.title === hint.name && !g.shared
+        && all.filter(t => t.groupId === g.id).every(t => t.cookieStoreId === store));
+      const groupId = await this.api.tabs.group({ tabIds: tabs.map(t => t.id),
+        ...(existing ? { groupId: existing.id } : { createProperties: { windowId } }) });
+      this.checkRequest(ctx, request);
+      await this.api.tabGroups.update(groupId, { title: hint.name, color: nearestGroupColor(hint.color), collapsed: hint.collapsed ?? false });
+      return undefined;
+    } catch {
+      this.checkRequest(ctx, request);
+      // Tabs may already exist or be grouped. Never replay a failed mutation.
+      return 'Tabs opened; browser could not finish tab grouping';
+    }
+  }
+
+  async groupContext(ctx, request) {
+    if (!validGroup(request.tab_group)) throw new Error('Invalid group');
+    for (const value of [request.container, request.profile]) {
+      if (value != null && (typeof value !== 'string' || !/^[A-Za-z0-9 _.-]{1,128}$/.test(value) || value === '.' || value === '..')) throw new Error('Invalid options');
+    }
+    let cookieStoreId;
+    if (request.container && ['firefox', 'mullvad'].includes(ctx.pairing.browser)) {
+      const identities = await this.api.contextualIdentities?.query({}) ?? [];
+      cookieStoreId = identities.find(c => c.name === request.container || c.cookieStoreId === request.container)?.cookieStoreId;
+      if (!cookieStoreId) throw new Error('Container unavailable');
+    }
+    this.checkRequest(ctx, request);
+    const windows = await this.api.windows.getAll({ windowTypes: ['normal'] });
+    this.checkRequest(ctx, request);
+    const eligible = windows.filter(w => Number.isSafeInteger(w.id) && w.id >= 0 && (!w.incognito || ctx.pairing.includePrivate === true) && (!cookieStoreId || !w.incognito));
+    return { cookieStoreId, windows: eligible };
+  }
+
+  async openGroup(ctx, request) {
+    const error = result => ({ id: request.id, status: 'ERROR', result });
+    if (!Array.isArray(request.urls) || !request.urls.length || request.urls.length > 50 || request.urls.some(url => !safeUrl(url)) || !validGroup(request.tab_group)) return error('ERROR_INVALID_REQUEST');
+    const { cookieStoreId, windows } = await this.groupContext(ctx, request);
+    const preferPrivate = ctx.pairing.includePrivate === true && ctx.pairing.browser === 'mullvad';
+    const preferred = windows.filter(w => !!w.incognito === preferPrivate);
+    const choices = preferred.length ? preferred : windows;
+    let window = choices.find(w => w.focused) ?? this.recentWindows.map(id => choices.find(w => w.id === id)).find(Boolean) ?? choices[0];
+    if (!window) {
+      this.checkRequest(ctx, request);
+      window = await this.api.windows.create({ incognito: preferPrivate && !cookieStoreId, focused: true });
+    }
+    this.checkRequest(ctx, request);
+    const all = await this.api.tabs.query({ windowId: window.id });
+    this.checkRequest(ctx, request);
+    const tabs = [];
+    for (const url of [...new Set(request.urls.map(url => safeUrl(url).href))]) {
+      let tab = all.find(t => t.windowId === window.id && !t.pinned && (!t.incognito || ctx.pairing.includePrivate === true) && (cookieStoreId ? t.cookieStoreId === cookieStoreId : !t.cookieStoreId || ['firefox-default', 'firefox-private'].includes(t.cookieStoreId)) && safeUrl(t.url)?.href === url);
+      if (!tab) {
+        this.checkRequest(ctx, request);
+        tab = await this.api.tabs.create({ windowId: window.id, url, active: false, ...(cookieStoreId ? { cookieStoreId } : {}) });
+      }
+      tabs.push(tab);
+    }
+    this.checkRequest(ctx, request);
+    const note = await this.ensureTabGroup(ctx, request, tabs);
+    this.checkRequest(ctx, request);
+    if (!request.tab_group.collapsed) await this.api.tabs.update(tabs[0].id, { active: true });
+    this.checkRequest(ctx, request);
+    await this.api.windows.update(window.id, { focused: true });
+    return { id: request.id, status: 'SUCCESS', result: 'OPENED_GROUP', window_id: window.id, tab_id: tabs[0].id, note };
+  }
+
+  async closeGroup(ctx, request) {
+    const error = result => ({ id: request.id, status: 'ERROR', result });
+    if (!validGroup(request.tab_group)) return error('ERROR_INVALID_REQUEST');
+    const { cookieStoreId, windows } = await this.groupContext(ctx, request);
+    if (!this.api.tabGroups?.query) return error('ERROR_GROUPS_UNSUPPORTED');
+    const groups = await this.api.tabGroups.query({});
+    this.checkRequest(ctx, request);
+    const ids = new Set(groups.filter(g => g.title === request.tab_group.name && !g.shared && windows.some(w => w.id === g.windowId)).map(g => g.id));
+    const tabs = await this.api.tabs.query({});
+    this.checkRequest(ctx, request);
+    const targets = tabs.filter(t => ids.has(t.groupId) && windows.some(w => w.id === t.windowId) && (!t.incognito || ctx.pairing.includePrivate === true) && (!cookieStoreId || t.cookieStoreId === cookieStoreId) && Number.isSafeInteger(t.id) && t.id >= 0);
+    if (!targets.length) return error('ERROR_TAB_NOT_FOUND');
+    await this.api.tabs.remove(targets.map(t => t.id));
+    return { id: request.id, status: 'SUCCESS', result: 'CLOSED_TABS', closed: targets.length };
   }
 
   // Close every tab matching the request (exact URL first, then hostname when

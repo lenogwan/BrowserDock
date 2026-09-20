@@ -8,6 +8,8 @@ pub struct Settings {
     pub always_on_top: bool,
     #[serde(default = "default_true")]
     pub hide_on_open: bool,
+    #[serde(default = "default_true")]
+    pub auto_tab_groups: bool,
     #[serde(default = "default_opacity")]
     pub opacity: f64,
     pub auto_hide: bool,
@@ -18,14 +20,29 @@ pub struct Settings {
 impl Settings {
     pub fn from_config(c: &Config) -> Self {
         Self {
-            window_size: crate::window_size::WindowSize::from_value(c.settings.get("window_size")).0,
+            window_size: crate::window_size::WindowSize::from_value(c.settings.get("window_size"))
+                .0,
             always_on_top: c
                 .settings
                 .get("always_on_top")
                 .and_then(|v| v.as_bool())
                 .unwrap_or(true),
-            hide_on_open: c.settings.get("hide_on_open").and_then(|v| v.as_bool()).unwrap_or(true),
-            opacity: c.settings.get("opacity").and_then(|v| v.as_f64()).unwrap_or(1.0).clamp(0.3, 1.0),
+            auto_tab_groups: c
+                .settings
+                .get("auto_tab_groups")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(true),
+            hide_on_open: c
+                .settings
+                .get("hide_on_open")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(true),
+            opacity: c
+                .settings
+                .get("opacity")
+                .and_then(|v| v.as_f64())
+                .unwrap_or(1.0)
+                .clamp(0.3, 1.0),
             auto_hide: c
                 .settings
                 .get("auto_hide")
@@ -52,8 +69,12 @@ impl Settings {
         }
     }
 }
-fn default_true() -> bool { true }
-fn default_opacity() -> f64 { 1.0 }
+fn default_true() -> bool {
+    true
+}
+fn default_opacity() -> f64 {
+    1.0
+}
 impl Settings {
     pub fn validate(&self) -> Result<(), String> {
         self.window_size.validate()?;

@@ -1,57 +1,32 @@
-# Agent Guidelines & Project Instructions for BrowserDock
+# BrowserDock agent instructions
 
-This document provides system instructions for any AI coding assistant or CLI agent (including **OpenCode CLI**, **Codex CLI**, and **Antigravity**) working in this repository.
+Windows multi-browser dock: Tauri v2, Rust, Svelte 5/SvelteKit static SPA, Tailwind v3. Firefox is the default; Mullvad, Chrome and Edge have explicit identities.
 
----
+## Start with the relevant context
 
-## 1. Project Overview & Context
+1. Read [PROGRESS.md](PROGRESS.md) for implemented work and remaining validation.
+2. Consult the relevant sections of [SPECIFICATION.md](SPECIFICATION.md), the authoritative architecture, schemas, IPC and UX contract.
+3. Use [browser-dock-builder](.agents/skills/browser-dock-builder/SKILL.md) for implementation/review. Load one copy only; `.codex` and `.opencode` contain identical compatibility copies.
+4. For any project file edit, use [mirror-project](.agents/skills/mirror-project/SKILL.md).
 
-You are developing **BrowserDock**, a high-performance Windows desktop utility designed for users who operate multiple browsers for distinct tasks:
-* **Firefox:** Primary daily driver.
-* **Mullvad Browser:** Privacy, anonymity, and anti-fingerprinting.
-* **Chrome:** Specific web apps and Google ecosystem tools.
-* **Edge:** Browsing geo-blocked / restricted sites via proxy/VPN extensions.
+[docs/README.md](docs/README.md) routes to task-specific references and historical records. Read linked detail only when needed; completed plans and dated test counts are not current task lists or fresh verification. Check current source/tests before acting on old file/line references. If implementation conflicts with the specification, identify the discrepancy rather than silently changing the contract.
 
-### Core Deliverables
-1. **Always-on-Top Floating Pill/Dock:** Sleek, minimalist desktop widget built with **Tauri v2 + Svelte 5 + Tailwind CSS**.
-2. **Unified Search & Auto-Dispatcher:** Instant URL and bookmark search with regex domain rules that automatically route URLs to the right browser.
-3. **Cross-Browser Tab Focusing Companion:** Embedded Rust WebSocket server (`127.0.0.1:49222`) connecting to a cross-browser WebExtension that detects already-open tabs in Firefox/Mullvad/Chrome/Edge, activates them, and brings the browser window forward via Win32 `SetForegroundWindow`.
-4. **Private Vault (PIN-Locked):** Sensitive bookmarks stored encrypted at rest (`vault.enc`) using **Argon2id + AES-256-GCM**, with auto-lock timer and panic key.
+## Work efficiently
 
----
+- Continue from the existing implementation. The seven phases are complete; do not scaffold again.
+- Search targeted paths with `rg`; batch independent reads. Reuse context already read unless it changed.
+- Match planning, review and verification to the scope. Routine fixes/docs do not need a new design document or full release run. Use relevant skills, not every available skill. Use parallel agents only for independent work when authorized.
+- Complete authorized work, necessary checks and mirroring; ask only for consequential missing requirements or required permissions. Preserve unrelated user changes.
+- Keep current contracts in SPECIFICATION, current status in PROGRESS, and user instructions in README. Update affected documents together without duplicating schemas or growing session transcripts.
 
-## 2. Mandatory References & Skills
+## Invariants
 
-Before generating code or executing tasks, you **MUST** consult:
-* **[`SPECIFICATION.md`](./SPECIFICATION.md)**: Contains the authoritative architecture, data schemas (`config.json`, `vault.enc`), IPC protocols, and UX interaction flows.
-* **BrowserDock Builder Skill**:
-  * Workspace path: [`.agents/skills/browser-dock-builder/SKILL.md`](./.agents/skills/browser-dock-builder/SKILL.md)
-  * Codex path: [`.codex/skills/browser-dock-builder/SKILL.md`](./.codex/skills/browser-dock-builder/SKILL.md)
-  * OpenCode path: [`.opencode/skills/browser-dock-builder/SKILL.md`](./.opencode/skills/browser-dock-builder/SKILL.md)
+- Target under 40 MB memory; measure on Windows before claiming it. Avoid Electron and unnecessary runtime dependencies.
+- Zero telemetry; BrowserDock runtime network traffic stays on `127.0.0.1`. Do not add remote assets or services.
+- Never log PINs/tokens or persist decrypted private bookmarks, groups or options. Zeroize backend keys/plaintext on lock; clear private UI and reject stale private operations.
+- Preserve config/vault compatibility, atomic writes and pre-migration backups. Browser launches use validated separate arguments, URL last; ambiguous dispatched mutations must not be retried.
+- Source of truth: `/home/raywan/gemini`. Mirror changed project files to `/mnt/d/Gemini` after each coherent batch, including hidden instructions/skills; verify identical bytes. Report blocked paths. Follow the mirror skill's exclusions and permission checks.
 
----
+## Completion
 
-## 3. Implementation Workflow & Milestones
-
-Follow the 7-phase runbook outlined in the skill file:
-1. **Phase 1: Project Scaffolding** (Tauri v2 + Svelte 5 TypeScript + Tailwind CSS).
-2. **Phase 2: Window Configuration & Win32 Integration** (Frameless, transparent, `WS_EX_TOPMOST`, `SetForegroundWindow`).
-3. **Phase 3: Browser Detection & Routing Engine** (Registry lookup, glob/regex routing rules, process spawn fallback).
-4. **Phase 4: Embedded WebSocket Server** (Tokio async server on port `49222`, tab registry, authentication).
-5. **Phase 5: Universal WebExtension Companion** (Manifest V3 + Gecko support, `tabs.query`, `tabs.update`, `windows.update`).
-6. **Phase 6: Private Vault & Crypto Engine** (Argon2id key derivation, AES-256-GCM encryption, memory clearing, auto-lock).
-7. **Phase 7: Frontend UI & Polish** (Svelte 5 reactive dock, fuzzy search, browser badges, vault PIN modal, system tray).
-
----
-
-## 4. Coding Conventions & Guardrails
-
-* **Lightweight First:** Keep memory usage under 40 MB. Avoid Electron or unnecessary heavy dependencies.
-* **Zero Telemetry:** All network traffic must strictly remain on `127.0.0.1`.
-* **Security First:** Never log PINs or write unencrypted private bookmark data to disk or plaintext cache. Memory containing derived keys must be zeroed upon lock.
-
----
-
-## 5. Mandatory Project Mirroring
-
-Whenever creating or updating project files, use [the mirror-project skill](./.agents/skills/mirror-project/SKILL.md). Treat `/home/raywan/gemini` as the source of truth and copy changed files to the same relative paths under `/mnt/d/Gemini` after each edit or coherent batch of edits. Verify identical contents before reporting completion. Include documentation, configuration, and hidden skill/instruction files; follow the skill's exclusions for generated files and secrets. Report any blocked or failed mirroring explicitly.
+Report the change, checks actually run, material limitations and mirror result. Native Windows foregrounding, tray, DPI, memory and installer behavior require native acceptance; browser mocks and cross-compilation do not prove them.

@@ -29,6 +29,7 @@ export type Settings = {
   always_on_top: boolean;
   auto_hide: boolean;
   hide_on_open: boolean;
+  auto_tab_groups: boolean;
   opacity: number;
   vault_timeout_minutes: number;
   global_shortcut: string;
@@ -43,7 +44,7 @@ export type VaultStatus = {
 export type Instance = {
   instance_id: string;
   browser: string;
-  tabs: { id: number; url: string; title: string; cookieStoreId?: string; container?: string }[];
+  tabs: { id: number; url: string; title: string; cookieStoreId?: string; container?: string; groupId?: number; groupTitle?: string; groupColor?: string; groupCollapsed?: boolean }[];
   containers?: { name: string; cookieStoreId?: string; cookie_store_id?: string }[];
 };
 /** Compact per-second poll payload: parsed, deduplicated tab hosts. `containers`
@@ -52,7 +53,7 @@ export type Instance = {
 export type InstanceDigest = {
   instance_id: string;
   browser: string;
-  tabs: { host: string; cookieStoreId?: string; cookie_store_id?: string }[];
+  tabs: { host: string; groupTitle?: string; groupColor?: string; cookieStoreId?: string; cookie_store_id?: string }[];
   containers?: { name: string; cookieStoreId?: string; cookie_store_id?: string }[];
 };
 

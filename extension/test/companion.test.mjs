@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { Companion, validPairing, safeUrl, inventory } from '../src/core.js';
+import { Companion, validPairing, safeUrl, inventory, nearestGroupColor } from '../src/core.js';
 
 const pairing = { browser: 'mullvad', token: '7d8bab34-411a-48ee-ae6c-8b1b1b110951', port: 49300 };
 const tab = (id, url, more = {}) => ({ id, url, title: 'Example', windowId: 10, incognito: false, ...more });
@@ -35,7 +35,7 @@ test('inventory excludes private and unsafe tabs and bounds UTF8 URLs and Unicod
 });
 test('auth precedes inventory and all browser actions', async () => {
   const f = fixture(); const s = await f.start();
-  assert.deepEqual(s.sent, [{ type: 'AUTH', token: pairing.token, browser: 'mullvad', instance_id: 'e8d741e8-460a-42bb-aea9-27d54a8e8542' }]);
+  assert.deepEqual(s.sent, [{ type: 'AUTH', token: pairing.token, browser: 'mullvad', instance_id: 'e8d741e8-460a-42bb-aea9-27d54a8e8542', capabilities: ['tab_groups_v1'] }]);
   s.message({ id: 'a', action: 'FOCUS_OR_OPEN', url: 'https://example.com', match_mode: 'new_tab' }); await f.tick(1000);
   assert.equal(f.calls.length, 0); assert.equal(s.sent.length, 1);
 });
@@ -289,7 +289,7 @@ test('default clock invokes timers on the global scope (Firefox strict receiver)
     const c = new Companion(f.api, url => { const s = { url, readyState: 0, sent: [], send(v) { this.sent.push(JSON.parse(v)); }, close() {}, open() { this.readyState = 1; this.onopen(); } }; f.sockets.push(s); return s; }, undefined, () => 'e8d741e8-460a-42bb-aea9-27d54a8e8542');
     await c.start(); f.sockets[0].open(); await flush();
     assert.equal(f.sockets.length, 1);
-    assert.deepEqual(f.sockets[0].sent, [{ type: 'AUTH', token: pairing.token, browser: 'mullvad', instance_id: 'e8d741e8-460a-42bb-aea9-27d54a8e8542' }]);
+    assert.deepEqual(f.sockets[0].sent, [{ type: 'AUTH', token: pairing.token, browser: 'mullvad', instance_id: 'e8d741e8-460a-42bb-aea9-27d54a8e8542', capabilities: ['tab_groups_v1'] }]);
     c.disconnect();
   } finally {
     globalThis.setTimeout = realSetTimeout; globalThis.clearTimeout = realClearTimeout;
@@ -435,4 +435,125 @@ test('legacy servers receive unchanged refreshes to recover dropped snapshots', 
   const f = fixture([tab(1, 'https://example.com/')]); const s = await f.auth(); await f.tick(500);
   f.api.alarms.onAlarm.emit({ name: 'browserdock-reconnect' }); await f.tick(500);
   assert.equal(s.sent.filter(m => m.action === 'TABS_SYNC').length, 2);
+});
+
+function withGroups(f, groups = []) {
+  f.api.tabGroups = {
+    async query() { return groups; },
+    async update(id, options) { f.calls.push(['group-update', id, options]); },
+  };
+  f.api.tabs.group = async options => { f.calls.push(['group', options]); return options.groupId ?? 21; };
+  return f;
+}
+const groupRequest = (more = {}) => ({ id: 'group', action: 'OPEN_GROUP', urls: ['https://one.test/', 'https://two.test/'], tab_group: { name: 'Work', color: '#4285f4', collapsed: true }, ...more });
+
+test('all canonical colors and shorthand map deterministically', () => {
+  assert.equal(nearestGroupColor('#4285f4'), 'blue');
+  assert.equal(nearestGroupColor('#34a853'), 'green');
+  assert.equal(nearestGroupColor('#fbbc04'), 'yellow');
+  assert.equal(nearestGroupColor('#fff'), nearestGroupColor('#ffffff'));
+  assert.equal(nearestGroupColor('not-a-color'), 'grey');
+});
+test('focus joins a matching native group and sets its metadata', async () => {
+  const f = withGroups(fixture([tab(1, 'https://one.test/')]), [{ id: 8, title: 'Work', windowId: 10 }]);
+  const s = await f.auth();
+  s.message(groupRequest({ action: 'FOCUS_OR_OPEN', url: 'https://one.test/', match_mode: 'exact' })); await flush();
+  assert.deepEqual(f.calls.find(c => c[0] === 'group'), ['group', { tabIds: [1], groupId: 8 }]);
+  assert.deepEqual(f.calls.find(c => c[0] === 'group-update'), ['group-update', 8, { title: 'Work', color: 'blue', collapsed: true }]);
+  assert.equal(s.sent.at(-1).result, 'FOCUSED_EXISTING');
+});
+test('open batch reuses exact URLs in one window and creates missing tabs once', async () => {
+  const f = withGroups(fixture([tab(1, 'https://one.test/'), tab(2, 'https://two.test/', { windowId: 11 })]));
+  const s = await f.auth(); const request = groupRequest();
+  s.message(request); await flush(); await flush(); s.message(request); await flush();
+  assert.equal(f.calls.filter(c => c[0] === 'create').length, 1);
+  assert.deepEqual(f.calls.find(c => c[0] === 'group'), ['group', { tabIds: [1, 99], createProperties: { windowId: 10 } }]);
+  assert.equal(s.sent.at(-1).result, 'OPENED_GROUP');
+});
+test('unsupported groups open ordinary tabs with a visible note and close fails safely', async () => {
+  const f = fixture(); const s = await f.auth();
+  s.message(groupRequest()); await flush(); await flush();
+  assert.equal(s.sent.at(-1).result, 'OPENED_GROUP');
+  assert.match(s.sent.at(-1).note, /unavailable/);
+  s.message(groupRequest({ id: 'close', action: 'CLOSE_GROUP' })); await flush();
+  assert.equal(s.sent.at(-1).result, 'ERROR_GROUPS_UNSUPPORTED');
+  assert.equal(f.calls.filter(c => c[0] === 'remove').length, 0);
+});
+test('grouping API rejection reports opened tabs and never recreates them', async () => {
+  const f = withGroups(fixture()); f.api.tabs.group = async () => { throw Error('disabled'); };
+  const s = await f.auth(); const request = groupRequest();
+  s.message(request); await flush(); await flush(); s.message(request); await flush();
+  assert.equal(s.sent.at(-1).result, 'OPENED_GROUP');
+  assert.match(s.sent.at(-1).note, /could not finish/);
+  assert.equal(f.calls.filter(c => c[0] === 'create').length, 2);
+});
+test('close group removes only matching non-shared, eligible container tabs', async () => {
+  const f = withGroups(fixture([
+    tab(1, 'https://one.test/', { groupId: 8, cookieStoreId: 'firefox-container-1' }),
+    tab(2, 'https://two.test/', { groupId: 8, cookieStoreId: 'firefox-default' }),
+    tab(3, 'https://private.test/', { groupId: 8, cookieStoreId: 'firefox-container-1', incognito: true }),
+    tab(4, 'https://shared.test/', { groupId: 9, cookieStoreId: 'firefox-container-1' }),
+  ]), [{ id: 8, title: 'Work', windowId: 10 }, { id: 9, title: 'Work', windowId: 10, shared: true }]);
+  f.api.contextualIdentities = { async query() { return [{ name: 'work', cookieStoreId: 'firefox-container-1' }]; } };
+  const s = await f.auth(); s.message(groupRequest({ action: 'CLOSE_GROUP', container: 'work' })); await flush();
+  assert.deepEqual(f.calls.find(c => c[0] === 'remove'), ['remove', [1]]);
+  assert.equal(s.sent.at(-1).closed, 1);
+});
+test('group creation does not reuse a same-name group from another container', async () => {
+  const f = withGroups(fixture([tab(1, 'https://one.test/', { cookieStoreId: 'firefox-container-1' }), tab(2, 'https://other.test/', { groupId: 8, cookieStoreId: 'firefox-container-2' })]), [{ id: 8, title: 'Work', windowId: 10 }]);
+  f.api.contextualIdentities = { async query() { return [{ name: 'work', cookieStoreId: 'firefox-container-1' }]; } };
+  const s = await f.auth(); s.message(groupRequest({ urls: ['https://one.test/'], container: 'work' })); await flush(); await flush();
+  assert.deepEqual(f.calls.find(c => c[0] === 'group')[1], { tabIds: [1], createProperties: { windowId: 10 } });
+});
+test('inventory groups are bounded, private-filtered and optional for legacy tabs', () => {
+  const tabs = [tab(1, 'https://one.test/', { groupId: 8 }), tab(2, 'https://private.test/', { groupId: 8, incognito: true }), tab(3, 'https://plain.test/', { groupId: -1 })];
+  const snapshot = inventory(tabs, false, 200, [{ id: 8, windowId: 10, title: '😀'.repeat(80), color: 'blue', collapsed: true }]);
+  assert.equal(snapshot.length, 2);
+  assert.equal([...snapshot[0].groupTitle].length, 64);
+  assert.equal(snapshot[0].groupColor, 'blue');
+  assert.equal(snapshot[0].groupCollapsed, true);
+  assert.equal(snapshot[1].groupTitle, undefined);
+});
+test('invalid or oversized batches do not mutate browser state', async () => {
+  const f = withGroups(fixture()); const s = await f.auth();
+  for (const [i, more] of [{ urls: [] }, { urls: Array(51).fill('https://one.test/') }, { urls: ['file:///secret'] }, { tab_group: { name: 'x'.repeat(65) } }].entries()) {
+    s.message(groupRequest({ ...more, id: String(i) })); await flush();
+    assert.equal(s.sent.at(-1).result, 'ERROR_INVALID_REQUEST');
+  }
+  assert.deepEqual(f.calls, []);
+});
+test('expired in-flight batch stops after an already-issued create; replay cannot duplicate', async () => {
+  const f = withGroups(fixture()); const s = await f.auth();
+  let finish;
+  f.api.tabs.create = options => { f.calls.push(['create', options]); return new Promise(resolve => { finish = () => resolve(tab(99, options.url)); }); };
+  s.message(groupRequest()); await flush();
+  assert.equal(f.calls.filter(c => c[0] === 'create').length, 1);
+  await f.tick(5000); finish(); await flush();
+  assert.equal(f.calls.filter(c => c[0] === 'create').length, 1);
+  assert.equal(f.calls.filter(c => c[0] === 'group').length, 0);
+  assert.equal(s.readyState, 3);
+});
+test('mid-batch API failure returns one error and replay does not repeat the first create', async () => {
+  const f = withGroups(fixture()); const s = await f.auth();
+  f.api.tabs.create = async options => { f.calls.push(['create', options]); if (f.calls.length > 1) throw Error('failed'); return tab(99, options.url); };
+  const request = groupRequest(); s.message(request); await flush(); s.message(request); await flush();
+  assert.equal(s.sent.at(-1).result, 'ERROR_BROWSER_API');
+  assert.equal(f.calls.filter(c => c[0] === 'create').length, 2);
+});
+test('private batch cancellation prevents mutations after the outstanding browser call returns', async () => {
+  const f = withGroups(fixture()); const s = await f.auth();
+  let finish;
+  f.api.tabs.create = options => { f.calls.push(['create', options]); return new Promise(resolve => { finish = () => resolve(tab(99, options.url)); }); };
+  s.message(groupRequest()); await flush();
+  s.message({ action: 'CANCEL_REQUEST', id: 'group' }); finish(); await flush();
+  assert.equal(f.calls.filter(c => c[0] === 'create').length, 1);
+  assert.equal(f.calls.filter(c => c[0] === 'group').length, 0);
+  assert.equal(s.sent.at(-1).status, 'ERROR');
+});
+test('grouped Edge opens missing tabs in an eligible browser window', async () => {
+  const f = withGroups(fixture([tab(1, 'https://other.test/')]));
+  await f.c.start(); f.c.configure({ ...pairing, browser: 'edge' }); const s = f.sockets.at(-1); s.open(); s.message({type:'AUTH_OK'});
+  s.message(groupRequest({action:'FOCUS_OR_OPEN',url:'https://one.test/',match_mode:'exact'})); await flush(); await flush();
+  assert.equal(s.sent.at(-1).result,'OPENED_NEW_TAB');
+  assert.equal(f.calls.filter(c=>c[0]==='group').length,1);
 });

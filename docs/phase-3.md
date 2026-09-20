@@ -1,5 +1,7 @@
 # Phase 3: configuration, detection and launching
 
+> Historical design/audit record. Read [current status](../PROGRESS.md) first. Original checkboxes, line numbers, environment limits and proposed fixes below are not a current work queue; use SPECIFICATION for current contracts.
+
 The launcher library lives at `src-tauri/src/launcher.rs`, with configuration,
 routing and detection in adjacent modules. `src-tauri/core/Cargo.toml` builds these
 modules independently of Tauri for testing. The desktop application depends on it.
@@ -30,12 +32,12 @@ Only absolute HTTP(S) URLs without credentials or control characters are accepte
 An explicit browser selection overrides rules. Missing targets never silently
 fall back to a different browser after selection.
 
-## Tauri commands
+## Current Tauri entrypoints
+
+`detect_browsers` and `launch_url` were removed. Detection is internal; `open_url` performs companion dispatch with safe process fallback.
 
 ```typescript
 import { invoke } from '@tauri-apps/api/core';
-
-const installed = await invoke('detect_browsers'); // Browser[] per spec schema
 
 // Preview does not require the target browser to be installed.
 const target = await invoke<string>('route_url', {
@@ -43,9 +45,9 @@ const target = await invoke<string>('route_url', {
 }); // chrome
 
 // Omit browserId to use routing; supply it for bookmarks/manual overrides.
-const launched = await invoke<string>('launch_url', {
+const launched = await invoke('open_url', {
   url: 'https://example.org', browserId: 'edge',
-}); // edge, if spawning succeeds
+}); // Structured outcome; see SPECIFICATION §4.3.
 ```
 
 Launching uses `Command`, separate arguments and the normalized URL last.
@@ -70,7 +72,7 @@ On Windows with MSVC build tools and WebView2:
 1. Run `cargo check --manifest-path src-tauri/Cargo.toml` and `npm run tauri dev`.
 2. Confirm first-run config generation, then restart and confirm the token and
    custom paths remain unchanged.
-3. Invoke `detect_browsers` and compare with installed browser paths.
+3. Inspect detected paths in Settings → Browsers and compare with installed browsers.
 4. Launch `https://docs.google.com` (Chrome), `https://check.torproject.org`
    (Mullvad), and `https://example.org` (Firefox), with browsers stopped/running.
 5. Supply `browserId: 'edge'` and verify it overrides a Google routing rule.

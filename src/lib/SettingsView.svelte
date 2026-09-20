@@ -227,6 +227,7 @@
           bind:checked={form.hide_on_open}
         /></label
       >
+      <label class="toggle"><span>Sync bookmark groups to browser tab groups<small>Firefox 139+, Chrome and Edge; unsupported browsers open regular tabs.</small></span><input type="checkbox" bind:checked={form.auto_tab_groups} /></label>
       <div class="timeout">
         <span class="timeout-label">Lock vault after inactivity</span>
         <div class="chips" role="group" aria-label="Timeout presets">

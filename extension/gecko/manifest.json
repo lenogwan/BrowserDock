@@ -1,12 +1,13 @@
 {
   "manifest_version": 3,
   "name": "BrowserDock Companion",
-  "version": "1.0.3",
+  "version": "1.0.4",
   "description": "Connect this browser to BrowserDock on your computer to focus or open tabs.",
   "permissions": [
     "tabs",
     "storage",
     "alarms",
+    "tabGroups",
     "contextualIdentities",
     "cookies"
   ],

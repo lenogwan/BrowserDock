@@ -3,14 +3,15 @@
   import { onMount, tick, untrack } from "svelte";
   import { targetLabel } from "./groups.js";
   import { isTabOpen } from "./search.js";
+  import { browserGroupFor, hasBrowserGroup, groupColor } from "./tab-groups.js";
   import { entryKey } from "./ids.js";
-  import type { Bookmark, Group, Browser } from "./types";
+  import type { Bookmark, Group, Browser, InstanceDigest } from "./types";
   type Section = { group: Group | null; private: boolean; items: Bookmark[] };
   // Flat render node: headers carry no item, rows carry no header flag.
   // A single shape avoids fragile template type-narrowing.
   type VNode = { key: string; section: Section; item: Bookmark | null; open: boolean };
   let {
-    sections,
+    sections, instances = [], busy = false, onopengroup, onclosegroup,
     activeKey,
     navTick,
     openTabs,
@@ -21,6 +22,9 @@
     groups = [], browsers = [], grouped = false, ongroup, ontoggle, onmove,
   }: {
     sections: Section[];
+    instances?: InstanceDigest[]; busy?: boolean;
+    onopengroup: (group: Group) => void;
+    onclosegroup: (group: Group) => void;
     activeKey: string | null;
     navTick: number;
     groups?: Group[]; browsers?: Browser[]; grouped?: boolean;
@@ -219,7 +223,10 @@
         <div class="group-header">
           <button class="group-title" aria-expanded={!group.collapsed} onclick={()=>ontoggle(group)}>
             <span style:background={group.color || 'var(--muted)'} class="group-dot"></span>{#if group.collapsed}<ChevronRight size={12} />{:else}<ChevronDown size={12} />{/if} <span class="group-name">{group.name ?? 'Ungrouped'}{isPrivate?' · private':''}</span><small>{sectionItems.length}</small>
-          </button><button class="icon-button group-edit" title={`Edit group ${group.name}`} aria-label={`Edit group ${group.name}`} onclick={()=>ongroup(group)}><Pencil size={12}/></button>
+          </button>
+          <button class="icon-button" disabled={busy || !sectionItems.length} title={`Open group ${group.name} in browser`} aria-label={`Open group ${group.name} in browser`} onclick={()=>onopengroup(group)}><ArrowUpRight size={12}/></button>
+          {#if hasBrowserGroup(group, sectionItems, instances, browsers)}<button class="icon-button" disabled={busy} title={`Close all browser tabs in group ${group.name}`} aria-label={`Close group tabs ${group.name}`} onclick={()=>onclosegroup(group)}><X size={12}/></button>{/if}
+          <button class="icon-button group-edit" title={`Edit group ${group.name}`} aria-label={`Edit group ${group.name}`} onclick={()=>ongroup(group)}><Pencil size={12}/></button>
         </div>
       </section>
     {/if}
@@ -228,6 +235,7 @@
     {#if node.item}
       {@const item = node.item}
       {@const section = node.section}
+      {@const nativeGroup = browserGroupFor(item, instances, browsers)}
       <!-- svelte-ignore a11y_no_static_element_interactions -->
       <div data-vkey={node.key} class="result" class:active={node.key === activeKey} class:is-open={node.open} class:insertion={dropTarget === item.id} draggable={grouped}
         ondragstart={e=>{dragging=item;e.dataTransfer?.setData('text/plain',item.id);if(e.dataTransfer)e.dataTransfer.effectAllowed='move'}}
@@ -251,7 +259,7 @@
               ></span>{/if}</span
           >
           <span class="result-copy"
-            ><strong>{item.title}</strong><small>{host(item.url)}</small>{#if !grouped && item.group_id}<small class="group-badge">{groups.find(g=>g.id===item.group_id && !!g.private===!!item.private)?.name ?? "Ungrouped"}</small>{/if}</span
+            ><strong>{item.title}</strong><small>{host(item.url)}</small>{#if nativeGroup}<small class="native-group" style:color={groupColor(nativeGroup.groupColor)} title={`Browser tab group: ${nativeGroup.groupTitle}`}>{nativeGroup.groupTitle || "Untitled browser group"}</small>{/if}{#if !grouped && item.group_id}<small class="group-badge">{groups.find(g=>g.id===item.group_id && !!g.private===!!item.private)?.name ?? "Ungrouped"}</small>{/if}</span
           >
           <span class="target" title={targetLabel(item,browsers)}
             >{targetLabel(item,browsers)}</span
@@ -298,6 +306,7 @@
 </div>
 
 <style>
+  .native-group {border:1px solid currentColor;border-radius:4px;padding:0 4px;width:fit-content;max-width:100%;font-size:9px;}
   .group-header { display:flex; align-items:center; margin:9px 0 3px; }
   .group-title {display:flex;align-items:center;gap:6px;flex:1;min-width:0;background:none;color:var(--muted);font-size:11px;padding:6px;text-align:left}
   .group-name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-transform:uppercase;letter-spacing:1px;font-size:10px}

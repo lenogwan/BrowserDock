@@ -47,8 +47,8 @@ Before distribution, verify all four browsers with companions, minimized-window 
 Build installers on Windows with `npm run package:windows`, or trigger the
 **Windows installers** GitHub Actions workflow. The output contains a per-user
 NSIS setup executable and an MSI alternative, both configured with the offline
-WebView2 installer. The installer does not bundle browser extensions; the
-companion builds remain a separately paired ZIP. Configuration remains in
+WebView2 installer. The installer bundles companion resources for staging through Settings;
+browser installation and pairing remain separate user steps. A companion ZIP is also available. Configuration remains in
 `%APPDATA%\BrowserDock`, not beside the executable. Packages are unsigned unless
 an Authenticode signing command is configured.
 

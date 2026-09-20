@@ -16,12 +16,71 @@ pub enum MatchMode {
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct TabGroupHint {
+    pub name: String,
+    pub color: Option<String>,
+    pub collapsed: Option<bool>,
+}
+impl TabGroupHint {
+    pub fn valid(&self) -> bool {
+        !self.name.trim().is_empty()
+            && self.name.chars().count() <= 64
+            && self.color.as_ref().is_none_or(|v| {
+                v.is_empty()
+                    || (v.starts_with('#')
+                        && [4, 7].contains(&v.len())
+                        && v[1..].bytes().all(|b| b.is_ascii_hexdigit()))
+            })
+    }
+}
+impl Drop for TabGroupHint {
+    fn drop(&mut self) {
+        use zeroize::Zeroize;
+        self.name.zeroize();
+        self.color.zeroize();
+    }
+}
+impl From<&crate::groups::Group> for TabGroupHint {
+    fn from(group: &crate::groups::Group) -> Self {
+        Self {
+            name: group.name.clone(),
+            color: Some(group.color.clone()),
+            collapsed: Some(group.collapsed),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct Tab {
     pub id: i64,
     pub url: String,
     pub title: String,
-    #[serde(default, rename = "cookieStoreId", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        rename = "cookieStoreId",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub cookie_store_id: Option<String>,
+    #[serde(default, rename = "groupId", skip_serializing_if = "Option::is_none")]
+    pub group_id: Option<i64>,
+    #[serde(
+        default,
+        rename = "groupTitle",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub group_title: Option<String>,
+    #[serde(
+        default,
+        rename = "groupColor",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub group_color: Option<String>,
+    #[serde(
+        default,
+        rename = "groupCollapsed",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub group_collapsed: Option<bool>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -36,15 +95,20 @@ pub struct Response {
     /// Tab count for `CLOSE_TABS` replies; absent for focus/open replies.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub closed: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
 }
 
 impl Response {
     pub fn valid(&self) -> bool {
         self.id.len() <= 64
+            && self.note.as_ref().is_none_or(|v| v.len() <= 256)
             && match self.status.as_str() {
                 "SUCCESS" => {
-                    (matches!(self.result.as_str(), "FOCUSED_EXISTING" | "OPENED_NEW_TAB")
-                        && self.window_id.is_some_and(|id| id >= 0)
+                    (matches!(
+                        self.result.as_str(),
+                        "FOCUSED_EXISTING" | "OPENED_NEW_TAB" | "OPENED_GROUP"
+                    ) && self.window_id.is_some_and(|id| id >= 0)
                         && self.tab_id.is_some_and(|id| id >= 0))
                         || (self.result == "CLOSED_TABS"
                             && self.closed.is_some_and(|n| n >= 1)
@@ -64,6 +128,8 @@ pub struct Auth {
     token: String,
     pub browser: String,
     pub instance_id: String,
+    #[serde(default)]
+    pub capabilities: Vec<String>,
 }
 
 impl Auth {
@@ -96,7 +162,29 @@ impl TabSync {
                     && ids.insert(tab.id)
                     && tab.url.len() <= MAX_URL_BYTES
                     && tab.title.chars().count() <= 256
-                    && tab.cookie_store_id.as_ref().is_none_or(|v| crate::options::valid_name(v))
+                    && tab
+                        .cookie_store_id
+                        .as_ref()
+                        .is_none_or(|v| crate::options::valid_name(v))
+                    && tab.group_id.is_none_or(|id| id >= 0)
+                    && tab
+                        .group_title
+                        .as_ref()
+                        .is_none_or(|v| v.chars().count() <= 64)
+                    && tab.group_color.as_deref().is_none_or(|v| {
+                        matches!(
+                            v,
+                            "grey"
+                                | "blue"
+                                | "red"
+                                | "yellow"
+                                | "green"
+                                | "pink"
+                                | "purple"
+                                | "cyan"
+                                | "orange"
+                        )
+                    })
                     && parse_url(&tab.url).is_ok()
             })
     }

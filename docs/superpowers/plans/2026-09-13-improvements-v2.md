@@ -1,5 +1,7 @@
 # BrowserDock V2 Implementation Plan
 
+> Historical design/audit record. Read [current status](../../../PROGRESS.md) first. Original checkboxes, line numbers, environment limits and proposed fixes below are not a current work queue; use SPECIFICATION for current contracts.
+
 **Goal:** Implement BUGS.md corrections and all four V2 improvements.
 **Architecture:** Preserve the existing desktop/core split and additive IPC. Public groups use config v1.1 with a pre-migration backup; private groups and options use an encrypted version-2 envelope with a tolerant legacy reader. Frontend settings and organization remain scoped to public or unlocked private data.
 **Tech Stack:** Tauri v2, Rust, Svelte 5, existing WebExtension builds.

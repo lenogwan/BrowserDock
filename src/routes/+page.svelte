@@ -74,6 +74,7 @@
     always_on_top: true,
     auto_hide: false,
     hide_on_open: true,
+    auto_tab_groups: true,
     opacity: 1,
     vault_timeout_minutes: 5,
     global_shortcut: "Ctrl+Shift+Space",
@@ -271,7 +272,7 @@
       bookmarks = data.bookmarks;
       groups = data.groups ?? [];
       browsers = data.browsers;
-      settings = { ...data.settings, window_size:data.settings.window_size??{width:400,height:null}, hide_on_open: data.settings.hide_on_open ?? true, opacity: Math.max(0.3, Math.min(1, data.settings.opacity ?? 1)) };
+      settings = { ...data.settings, auto_tab_groups: data.settings.auto_tab_groups ?? true, window_size:data.settings.window_size??{width:400,height:null}, hide_on_open: data.settings.hide_on_open ?? true, opacity: Math.max(0.3, Math.min(1, data.settings.opacity ?? 1)) };
       if (data.warnings?.length) error = data.warnings.join(" ");
     } catch (e) {
       if (mounted) error = String(e);
@@ -359,6 +360,34 @@
         notice = outcome?.note ?? `Opened in ${outcome?.browser_id ?? override ?? bookmark?.target_browser ?? route.split(" · ")[0]}`;
         if (settings.hide_on_open) {
           await invoke("dock_hide");
+          expanded = false;
+          dockVisible = false;
+        }
+      }
+    } catch (e) {
+      if (current === generation) error = String(e);
+    } finally {
+      if (current === generation) busy = false;
+    }
+  }
+  async function groupAction(group: Group, close = false) {
+    if (busy) return;
+    if (!native) { error = "Open the desktop app to manage browser tab groups."; return; }
+    const current = generation;
+    busy = true;
+    error = "";
+    try {
+      const outcome = await invoke<{processed: number; note?: string}>(close ? "close_group_tabs" : "open_group", {
+        groupId: group.id, private: !!group.private,
+      });
+      if (current !== generation) return;
+      notice = outcome.note ?? `${close ? 'Closed' : 'Opened'} ${outcome.processed} tab${outcome.processed === 1 ? '' : 's'} for ${group.name}`;
+      if (!close) {
+        query = "";
+        override = null;
+        if (settings.hide_on_open) {
+          await invoke("dock_hide");
+          if (current !== generation) return;
           expanded = false;
           dockVisible = false;
         }
@@ -908,6 +937,10 @@
               {browsers}
               grouped={!query.trim()}
               ongroup={(group)=>editingGroup={...group}}
+              onopengroup={(group)=>groupAction(group)}
+              onclosegroup={(group)=>groupAction(group,true)}
+              {instances}
+              {busy}
               ontoggle={(group)=>saveGroup({...group,collapsed:!group.collapsed},false).catch(e=>error=String(e))}
               onmove={move}
               {openTabs}

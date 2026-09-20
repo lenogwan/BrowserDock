@@ -11,10 +11,10 @@
 
 ### 1.1 Why Tauri v2 + Svelte 5 + Rust?
 Running 4 web browsers simultaneously (Firefox, Mullvad, Chrome, Edge) consumes gigabytes of memory. An always-on-top launcher must **never** be an Electron app (~200MB+ RAM overhead).
-* **Memory Footprint:** Tauri with WebView2 + Rust operates at **<35 MB RAM**.
+* **Memory target:** Under 40 MB for the release app; measure on native Windows and state whether WebView2 child processes are included. This is a target, not a verified result.
 * **Native Windows Integration:** Rust provides direct access to Win32 APIs (`windows-rs`) for `SetForegroundWindow`, `BringWindowToTop`, registry querying for browser paths, and global hotkeys.
-* **Security & Crypto:** Rust's `ring` or `aes-gcm` combined with `argon2` provides hardware-accelerated, leak-proof AES-256-GCM encryption for the Private Vault.
-* **Reactive Frontend:** Svelte 5 with Tailwind CSS delivers instant UI responses (<16ms frame time) with zero virtual DOM overhead.
+* **Security & Crypto:** The Rust implementation uses `aes-gcm` and `argon2`; see §3.2 and the [vault security boundary](docs/phase-6-7.md#storage-and-security-boundary).
+* **Reactive Frontend:** Svelte 5 with Tailwind v3; target responsive interaction and verify performance on Windows.
 
 ### 1.2 High-Level System Architecture
 
@@ -59,7 +59,7 @@ flowchart TD
 * **Dock Mode (Floating Pill):**
   * Sleek, draggable, semi-transparent bar pinned to any screen edge or free-floating.
   * Win32 Window Styles: `WS_EX_TOPMOST`, `WS_EX_TOOLWINDOW` (hide from Alt+Tab switcher; maps to Tauri `skipTaskbar: true`).
-  * Implemented window geometry is 400px wide x 56px high (authoritative values live in `src-tauri/tauri.conf.json`). Note: `transparent: true` is incompatible with native `shadow` on WebView2, so `shadow` MUST be `false`.
+  * Default collapsed geometry is 400px wide x 56px high (`src-tauri/tauri.conf.json`); persisted resizing follows §5.2. Note: `transparent: true` is incompatible with native `shadow` on WebView2, so `shadow` MUST be `false`.
   * Auto-hide option: Snaps to screen border and collapses into a thin indicator strip, expanding on mouse hover.
 * **Command Palette Mode (Quick Launcher):**
   * Summoned via system-wide global hotkey (default: `Ctrl + Shift + Space`; `Alt + Space` is reserved by the Windows window-menu and MUST NOT be the default; `Win + Shift + B` remains an allowed alternative).
@@ -73,22 +73,22 @@ flowchart TD
 * **Automated Browser Dispatcher:**
   * Every bookmark has an assigned browser target: `Firefox`, `Mullvad`, `Chrome`, `Edge`, or `Custom`.
   * For typed URLs, **Domain Routing Rules** are evaluated in priority order (ascending: lower `priority` number wins; first match wins; ties broken by `id` ascending). Matching is case-insensitive on host; glob syntax supports `*` (any run) and `?` (single char), with `*://` matching any scheme. If no rule matches, the default fallback browser is `firefox`:
-    * Regex / Glob matching (e.g., `*.google.com`, `docs.google.com` -> Chrome; `*.onion`, `privacy-check.me` -> Mullvad; `*.geo-blocked.tv` -> Edge; default fallback -> Firefox).
+    * Glob matching (no implicit regex mode) (e.g., `*.google.com`, `docs.google.com` -> Chrome; `*.onion`, `privacy-check.me` -> Mullvad; `*.geo-blocked.tv` -> Edge; default fallback -> Firefox).
   * **Manual Hotkey Override:** User can override target browser before pressing Enter (e.g., `Alt+1` or `Alt+F` for Firefox, `Alt+2` or `Alt+M` for Mullvad, etc.).
 
 ### 2.3 Tab Switching & Focus (The Companion Extension)
 * **Problem:** Windows OS can only bring a browser window to the front; it cannot read or switch internal browser tabs.
-* **Foreground caveat:** Win32 `SetForegroundWindow` is subject to the foreground-lock timeout and can fail when the dock is not the foreground process. The Rust helper MUST use the `AttachThreadInput` + `AllowSetForegroundWindow` + `ShowWindow(SW_RESTORE)` + `BringWindowToTop` best-effort sequence (see skill Phase 2); the extension's `windows.update({focused:true})` is the more reliable tab-bring-to-front path.
+* **Foreground caveat:** Win32 `SetForegroundWindow` is subject to the foreground-lock timeout and can fail when the dock is not the foreground process. The Rust helper MUST use the `AttachThreadInput` + `AllowSetForegroundWindow` + `ShowWindow(SW_RESTORE)` + `BringWindowToTop` best-effort sequence (see `src-tauri/src/win32_helper.rs`); the extension's `windows.update({focused:true})` is the more reliable tab-bring-to-front path.
 * **Connection model:** each extension instance connects independently. The server keys connections by per-connection UUID carrying a claimed `browser` id (`firefox` | `mullvad` | `chrome` | `edge`); multiple instances may share one `browser` id (e.g. Firefox + Mullvad both Gecko). The server MUST NOT key the registry by bare `browser_id` alone.
 * **Solution:**
   1. User selects or clicks a site (e.g., `github.com`).
-  2. BrowserDock queries the embedded WebSocket server: is any connected browser currently holding an open tab matching `github.com`?
+  2. BrowserDock selects a connected instance of the routed browser, using cached inventory as a hint; that companion queries actual tabs before matching.
   3. **If Tab is Open:**
      * The companion extension executes `chrome.tabs.update(tabId, { active: true })` and `chrome.windows.update(windowId, { focused: true })`.
-     * Rust calls Win32 `SetForegroundWindow(hwnd)` to ensure Windows OS switches focus immediately.
+     * Native foregrounding is best effort, never guaranteed. Extension `window_id` values are not Win32 HWNDs and must not be passed to Win32 APIs.
   4. **If Tab is NOT Open:**
-     * If browser process is already running: Companion extension executes `chrome.tabs.create({ url })`.
-     * If browser process is NOT running: Rust launches the browser executable via `std::process::Command` passing CLI flags and URL.
+     * If a companion is connected: it creates an eligible tab/window according to §4.2.
+     * If no companion is available before dispatch: Rust launches the selected browser via `std::process::Command`, with validated arguments and URL last. Safe fallback cases are defined in §4.2.
 
 ### 2.4 Private Vault (PIN-Protected Bookmarks)
 * **Visual Isolation:**
@@ -129,6 +129,7 @@ Location: `%APPDATA%/BrowserDock/config.json`
     "ws_port": 49222,
     "auth_token": "random_uuidv4_generated_on_first_run",
     "hide_on_open": true,
+    "auto_tab_groups": true,
     "opacity": 1.0
   },
   "browsers": [
@@ -265,14 +266,14 @@ Authoritative field names (extensions and server MUST use exactly these):
 }
 ```
 
-`container` and `profile` are optional and additive. Gecko resolves a container name or cookie-store ID using `contextualIdentities`; existing tabs must also match that cookie store. A missing container returns `ERROR_CONTAINER_NOT_FOUND`, allowing a plain process open with a visible note. Edge also permits process fallback for `ERROR_NO_BROWSER_WINDOW`, sent only when the companion finds no eligible normal window before any tab operation. This safely handles a background-only Edge instance; no other browser API errors permit retry. Disconnected companions also permit this fallback. Ambiguous timeouts and unrelated browser API failures remain errors to avoid duplicate tabs. Private/incognito launches bypass companion reuse and start a new browser window.
+`container` and `profile` are optional and additive. Gecko resolves a container name or cookie-store ID using `contextualIdentities`; existing tabs must also match that cookie store. A missing container returns `ERROR_CONTAINER_NOT_FOUND`, allowing a plain process open with a visible note. Edge also permits process fallback for `ERROR_NO_BROWSER_WINDOW`, sent only when the companion finds no eligible normal window before any tab operation. This safely handles a background-only Edge instance; no other browser API errors permit retry. A companion unavailable before dispatch also permits process fallback; disconnection after dispatch does not. Ambiguous timeouts and unrelated browser API failures remain errors to avoid duplicate tabs. Private/incognito launches bypass companion reuse and start a new browser window.
 
 #### B. Close Tabs (Dock -> Extension)
 Same envelope with `"action": "CLOSE_TABS"`; `match_mode` accepts `domain_or_exact` or `exact` (`new_tab` is rejected). The extension closes every tab matching the focus candidate filters (exact URL first, then hostname; container-scoped on Gecko; private tabs need the same opt-in) with a single `tabs.remove` call and replies `{id, status: "SUCCESS", result: "CLOSED_TABS", closed: <n>}`. No match returns `ERROR_TAB_NOT_FOUND` without mutation. There is no process fallback for close: a missing companion or no matching tab is reported, never launched. Timeouts/disconnects are reported once and never retried, since the tabs may already be closed.
 
 Chrome/Edge profiles are passed as `--profile-directory=<directory>` before the URL on process launches. Companion profile hints do not enforce profile selection: tab reuse targets a connected instance. Install a companion in each profile; native warm-profile behavior remains browser dependent.
 
-#### B. Extension Response (Extension -> Dock)
+#### C. Extension Response (Extension -> Dock)
 Authoritative shape (do not use bare `status: FOCUSED/OPENED`):
 ```json
 {
@@ -283,9 +284,9 @@ Authoritative shape (do not use bare `status: FOCUSED/OPENED`):
   "tab_id": 44
 }
 ```
-`result` is one of `FOCUSED_EXISTING | OPENED_NEW_TAB | ERROR_*`.
+Successful responses use `status: "SUCCESS"` and `result: FOCUSED_EXISTING | OPENED_NEW_TAB | CLOSED_TABS`. Errors use `status: "ERROR"` and an `ERROR_*` result; close success includes `closed`.
 
-#### C. Tab Inventory Broadcast (Extension -> Dock)
+#### D. Tab Inventory Broadcast (Extension -> Dock)
 Sent on tab updates (debounced ≥500 ms, capped at 200 tabs per message, URLs truncated to 2 KB), allowing the dock UI to render an indicator on bookmarks that are currently open.
 ```json
 {
@@ -308,9 +309,21 @@ Gecko inventory includes optional `cookieStoreId`; Chromium omits it. After auth
 - Unchanged negotiated inventories are suppressed. Legacy-server inventories are periodically refreshed because older servers may silently drop closely arriving snapshots. Tab updates unrelated to URL/title/load status/container do not trigger inventory queries. All caches are in memory only; private opt-in and URL validation remain mandatory. Tabs above the bounded snapshot limit are excluded from routing hints.
 - The options page displays live status through same-extension `BROWSERDOCK_STATUS` messaging. Replies contain only a connection state. Pairing input is limited to 16 KB and stale asynchronous file imports cannot overwrite later user actions.
 
+### 4.2.2 Native browser tab groups (companion v1.0.4)
+
+Both distributions request `tabGroups`; grouping is feature-detected so unavailable APIs can still open ordinary tabs. The companion advertises `capabilities:["tab_groups_v1"]` in `AUTH`. Legacy companions still accept individual opens; a grouping request to one returns an update notice. Batch actions require the advertised capability and are rejected before dispatch to a legacy companion.
+
+- `FOCUS_OR_OPEN` accepts optional `tab_group:{name,color?,collapsed?}`. Names contain 1–64 Unicode characters; colors are optional `#RGB`/`#RRGGBB`, mapped to the nearest of the nine browser colors. Grouped Edge opens can create a missing tab in a verified eligible window; ordinary Edge opens retain §4.2A's process handoff behavior.
+- `OPEN_GROUP` uses `{id,action,urls,tab_group,container?,profile?,deadline_ms}`. The same envelope with `action:"CLOSE_GROUP"` omits URLs. Requests have at most 50 bookmarks and a 16 KB frame limit. Desktop preflight reserves framing space by limiting each serialized URL array to 14 KB. Browser/profile/container/incognito differences split dock groups into separate batches, each sent to one connected instance.
+- Open chooses one eligible normal window (focused, recently focused, then first), reuses exact URLs within it, creates missing tabs, and groups them with one `tabs.group` call. Same-title groups are reused within that window only when their members share the tab's cookie store. Shared groups are excluded from title-based reuse and closing. Browser group IDs are ephemeral and never persisted. Dock groups with the same name can intentionally resolve to the same browser group; renaming a dock group does not rename existing browser groups.
+- Close selects one instance per resolved browser/options batch, preferring matching title/container inventory, and removes all tabs with that exact native group title across its eligible windows, filtered by the requested container and private-tab opt-in. This includes manually added group tabs. It never falls back to URL/hostname closing or process launch. Missing native groups return `ERROR_TAB_NOT_FOUND`; unsupported grouping returns an error.
+- Open replies use `SUCCESS/OPENED_GROUP` with `window_id`, `tab_id`, and optional bounded `note`; close reuses `SUCCESS/CLOSED_TABS` with `closed`. Unsupported/disabled grouping leaves opened tabs in place and reports a note. Browser batches are **not atomic**: deadlines, disconnects, or API failures may leave partial work, which is reported without replay or process fallback. A missing companion before dispatch may open ordinary tabs; incognito options always use process launch and are not group-closeable.
+- `CANCEL_REQUEST {id}` is connection-local and stops subsequent mutations in a pending command. Desktop private group requests monitor the vault session and send cancellation when it becomes invalid. Already-issued browser API operations cannot be undone. Private group hints and batch URLs remain in memory only and are zeroized when released; locking clears private frontend groups and ignores stale outcomes.
+- Inventory adds optional `groupId`, `groupTitle` (≤64 characters), `groupColor` (one of the nine enum names), and `groupCollapsed`. These fields work with legacy and paged snapshots. The compact desktop digest retains title/color and distinguishes same-host tabs in different groups. Group events and tab `groupId` changes trigger the existing debounced snapshot pipeline. Group inventory is queried once per snapshot; failed group queries still allow plain tab inventory.
+
 ### 4.3 Desktop commands
 
-The unused `detect_browsers` and `launch_url` desktop commands were removed during QA. Browser detection remains internal; `open_url` is the single desktop launch entry point. `dock_hide` and `dock_escape` return failures to the UI, and background window-operation failures emit `dock-error`. The frontend marks a successful post-launch hide only after the native operation succeeds.
+The unused `detect_browsers` and `launch_url` desktop commands were removed during QA. Browser detection remains internal; `open_url` launches individual bookmarks/URLs; `open_group` launches bookmark groups. `dock_hide` and `dock_escape` return failures to the UI, and background window-operation failures emit `dock-error`. The frontend marks a successful post-launch hide only after the native operation succeeds.
 
 The desktop webview communicates via Tauri IPC only; its CSP grants no direct WebSocket access. Companion extensions retain `ws://127.0.0.1:*` for port fallback. Restrict `%APPDATA%\BrowserDock` using Windows user ACLs, never share the plaintext bearer token, and use a strong nonnumeric vault passphrase: copying ciphertext bypasses the app's retry lockout. DPAPI token wrapping remains a follow-up.
 
@@ -321,6 +334,7 @@ Existing command names remain available. Tauri JavaScript arguments use camelCas
 - `save_group {group, private}`, `delete_group {id, private}`, and `move_bookmark {id, groupId, index, private}` persist within one scope. Index is clamped and order is renormalized.
 - `save_browser {browser}` updates an existing browser's executable, compatibility args, profile/container defaults and advanced extra arguments. All launch commands read current settings immediately.
 - `open_url {url, browserId?, forceNewTab?, bookmarkId?, bookmarkPrivate?}` resolves a stored bookmark's URL/options when supplied. `bookmarkPrivate` disambiguates IDs shared between scopes; omission searches public then unlocked vault. Result adds optional `note` for container fallback.
+- `open_group {groupId, private, browserId?}` and `close_group_tabs {groupId, private}` resolve the stored group and bookmarks within one public/vault scope. Results are `{processed, note?}`. Group opens respect bookmark options and the optional browser override; close respects each stored target. Private commands require a valid unlocked session.
 - `close_tab {url, browserId?, exactMatch?, bookmarkId?, bookmarkPrivate?}` closes open tabs via the companion using the same bookmark resolution. Result is `{browser_id, result: CLOSED_TABS | TAB_NOT_FOUND, closed, note?}`. No companion, or no matching tab, is reported — never launched.
 - `route_url` still returns the browser ID. `route_details {url, browserId?, bookmarkId?, bookmarkPrivate?}` returns `{browser_id, profile, container, incognito}`.
 - `browser_profiles {browserId}` returns best-effort Chromium profile directories from Local State or connected Gecko container names; unavailable discovery yields an empty list.
@@ -330,7 +344,7 @@ Existing command names remain available. Tauri JavaScript arguments use camelCas
 ## 5. User Experience & Interaction Design
 
 ### 5.1 The Mini-Dock Widget
-* Dimensions: 400px wide x 56px high (authoritative values in `src-tauri/tauri.conf.json`; collapsed search bar with quick icons).
+* Default collapsed dimensions: 400px wide x 56px high; user resizing follows §5.2.
 * Visual Hierarchy:
   1. **Left:** App / Shield Icon (Shows green when Vault is unlocked, grey when locked).
   2. **Center:** Instant Search input with placeholder: `Type URL or search bookmarks...`
@@ -348,6 +362,8 @@ Existing command names remain available. Tauri JavaScript arguments use camelCas
 
 `always_on_top` controls z-order only. `hide_on_open` (default true) hides after a successful launch. Turning it off clears the query/browser override, preserves expanded state and shows the target browser notice without stealing focus back. Failed launches stay visible. `auto_hide` independently collapses the idle dock to a strip; Escape and tray controls retain their behavior.
 
+`auto_tab_groups` defaults to true, including for older configs. Individual grouped bookmarks pass their stored group hint when enabled. Settings → Behavior can disable automatic grouping; explicit group actions remain available. Group headers provide Open Group in Browser and, when matching native group inventory exists, Close Group Tabs. Bookmark rows show a title/color badge from browser inventory using the existing host/container indicator semantics.
+
 Settings provides a 30–100% background-opacity slider in 5% steps, with an unsaved live preview. Save persists it; cancel discards the preview. Text and borders keep their opacity, and reduced-motion users see instant changes.
 
 The main dock window is resizable. `window_size.width` is clamped to 280–800 px (default 400); `window_size.height` is `null` for automatic content height or a manual value when explicitly resized/configured. Manual height applies to expanded panels only: Collapse always shrinks the native window to the 56px pill, and expanding restores the saved manual height. Startup also uses the pill height. The 6px auto-hide strip takes precedence over both modes. Size changes are applied live and persisted on commit, while cancel restores the last committed size. The resize grip is hidden in strip mode, and resizing preserves the snapped screen edge.
@@ -358,14 +374,16 @@ BookmarkEditor offers contextual profile/container inputs and a private/incognit
 
 ### 5.3 The Vault Unlock Modal
 * Trigger: Clicking Lock icon or typing `/vault` into search.
-* Visual: Numeric keypad or PIN input with masking dots (`••••`).
+* Visual: Masked passphrase input; creation requires at least eight characters and rejects numeric-only secrets.
 * Behavior:
   * 3 consecutive invalid PINs trigger a 30-second lockout.
   * Valid PIN derives AES key, decrypts `vault.enc`, and adds private bookmarks to the search list with a distinct badge.
 
 ---
 
-## 6. Implementation Roadmap & Milestones
+## 6. Original roadmap (implemented)
+
+See [PROGRESS.md](PROGRESS.md) for current status and remaining native validation. These milestones describe the initial build, not pending work.
 
 1. **Milestone 1: Tauri Project Setup & Native Window Controls**
    * Tauri v2 initialization with Svelte 5 and Tailwind CSS.
