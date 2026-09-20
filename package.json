@@ -1,6 +1,6 @@
 {
   "name": "browserdock",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "BrowserDock - always-on-top multi-browser dock and dispatcher (Tauri v2 + Svelte 5)",
   "type": "module",
   "scripts": {
