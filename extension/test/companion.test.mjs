@@ -491,6 +491,25 @@ test('Edge group open with a stale window hands off before creating tabs', async
   assert.deepEqual(s.sent.at(-1), { id: 'edge-group-stale', status: 'ERROR', result: 'ERROR_NO_BROWSER_WINDOW' });
   assert.deepEqual(f.calls, []);
 });
+test('Edge group create through a stale window hands off when nothing was created', async () => {
+  const f = fixture([tab(1, 'https://other.example/')]);
+  const s = await f.auth();
+  f.c.connection.pairing = { ...pairing, browser: 'edge' };
+  f.api.tabs.create = async () => { throw new Error('stale Edge window rejects creation'); };
+  s.message(groupRequest({ id: 'edge-group-create' })); await flush(); await flush();
+  assert.deepEqual(s.sent.at(-1), { id: 'edge-group-create', status: 'ERROR', result: 'ERROR_NO_BROWSER_WINDOW' });
+  assert.deepEqual(f.calls, []);
+});
+test('Edge group create failure after a created tab stays an API error', async () => {
+  const f = fixture([tab(1, 'https://other.example/')]);
+  const s = await f.auth();
+  f.c.connection.pairing = { ...pairing, browser: 'edge' };
+  let n = 0;
+  f.api.tabs.create = async opts => { f.calls.push(['create', opts]); if (++n > 1) throw new Error('second create fails'); return tab(99, opts.url); };
+  s.message(groupRequest({ id: 'edge-group-partial' })); await flush(); await flush();
+  assert.deepEqual(s.sent.at(-1), { id: 'edge-group-partial', status: 'ERROR', result: 'ERROR_BROWSER_API' });
+  assert.equal(f.calls.filter(c => c[0] === 'create').length, 2);
+});
 test('Edge single open with a group hint hands off when no window exists', async () => {
   const f = fixture();
   const s = await f.auth();

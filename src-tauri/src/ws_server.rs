@@ -719,8 +719,15 @@ impl ServerHandle {
             // opening safely falls back to a plain process launch exactly like
             // a missing companion. Closing has no fallback and keeps the error.
             Ok(Ok(response)) if !close && response.result == "ERROR_NO_BROWSER_WINDOW" => Ok(None),
-            Ok(Ok(_)) => Err("Companion could not finish the group action; some tabs may have changed. No retry was made".into()),
-            _ => Err("Companion timed out or disconnected; some tabs may have changed. No retry was made".into()),
+            // Name the companion result code: without it every group failure
+            // reports identically and the cause cannot be traced.
+            Ok(Ok(response)) => Err(format!(
+                "Companion could not finish the group action ({}); some tabs may have changed. No retry was made",
+                response.result
+            )
+            .into()),
+            Ok(Err(_)) => Err("Companion disconnected during the group action; some tabs may have changed. No retry was made".into()),
+            Err(_) => Err("Companion timed out during the group action; some tabs may have changed. No retry was made".into()),
         }
     }
 }

@@ -534,11 +534,22 @@ export class Companion {
     }
     this.checkRequest(ctx, request);
     const tabs = [];
+    // A stale background-only Edge window can serve inventory yet reject
+    // creation. Track whether anything was created: handing off before the
+    // first mutation cannot duplicate tabs, while a later failure is
+    // genuinely ambiguous and must stay an error.
+    let createdAny = false;
     for (const url of [...new Set(request.urls.map(url => safeUrl(url).href))]) {
       let tab = all.find(t => t.windowId === window.id && !t.pinned && (!t.incognito || ctx.pairing.includePrivate === true) && (cookieStoreId ? t.cookieStoreId === cookieStoreId : !t.cookieStoreId || ['firefox-default', 'firefox-private'].includes(t.cookieStoreId)) && safeUrl(t.url)?.href === url);
       if (!tab) {
         this.checkRequest(ctx, request);
-        tab = await this.api.tabs.create({ windowId: window.id, url, active: false, ...(cookieStoreId ? { cookieStoreId } : {}) });
+        try {
+          tab = await this.api.tabs.create({ windowId: window.id, url, active: false, ...(cookieStoreId ? { cookieStoreId } : {}) });
+        } catch {
+          if (ctx.pairing.browser === 'edge' && !createdAny) return error('ERROR_NO_BROWSER_WINDOW');
+          throw new Error('tab create failed');
+        }
+        createdAny = true;
       }
       tabs.push(tab);
     }
