@@ -382,8 +382,9 @@ async fn cold_launch_batch(
         details.browser_id.clone(),
         launched.first().cloned().unwrap_or_default(),
     );
+    let launch_guard = still_valid.clone();
     tokio::task::spawn_blocking(move || {
-        if !still_valid() {
+        if !launch_guard() {
             return Err("Group action was cancelled; earlier tabs may have changed".to_string());
         }
         let plan =
