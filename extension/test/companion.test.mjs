@@ -470,6 +470,57 @@ test('open batch reuses exact URLs in one window and creates missing tabs once',
   assert.deepEqual(f.calls.find(c => c[0] === 'group'), ['group', { tabIds: [1, 99], createProperties: { windowId: 10 } }]);
   assert.equal(s.sent.at(-1).result, 'OPENED_GROUP');
 });
+test('background-only Edge group open hands off before creating a window', async () => {
+  const f = fixture();
+  const s = await f.auth();
+  f.c.connection.pairing = { ...pairing, browser: 'edge' };
+  f.api.windows.getAll = async () => [];
+  f.api.tabs.query = async () => { throw new Error('Background-only Edge must not query hidden tabs'); };
+  f.api.windows.create = async () => { throw new Error('Background-only Edge must not create windows'); };
+  s.message(groupRequest({ id: 'edge-group-closed' })); await flush(); await flush();
+  assert.deepEqual(s.sent.at(-1), { id: 'edge-group-closed', status: 'ERROR', result: 'ERROR_NO_BROWSER_WINDOW' });
+  assert.deepEqual(f.calls, []);
+});
+test('Edge group open with a stale window hands off before creating tabs', async () => {
+  const f = fixture();
+  const s = await f.auth();
+  f.c.connection.pairing = { ...pairing, browser: 'edge' };
+  f.api.windows.getAll = async () => [{ id: 42, incognito: false, type: 'normal' }];
+  f.api.tabs.query = async () => { throw new Error('stale Edge window rejects inventory'); };
+  s.message(groupRequest({ id: 'edge-group-stale' })); await flush(); await flush();
+  assert.deepEqual(s.sent.at(-1), { id: 'edge-group-stale', status: 'ERROR', result: 'ERROR_NO_BROWSER_WINDOW' });
+  assert.deepEqual(f.calls, []);
+});
+test('Edge single open with a group hint hands off when no window exists', async () => {
+  const f = fixture();
+  const s = await f.auth();
+  f.c.connection.pairing = { ...pairing, browser: 'edge' };
+  f.api.windows.getAll = async () => [];
+  f.api.tabs.query = async () => { throw new Error('Background-only Edge must not query hidden tabs'); };
+  s.message({ id: 'edge-focus-grouped', action: 'FOCUS_OR_OPEN', url: 'https://example.com/', match_mode: 'new_tab', tab_group: { name: 'Work', color: '#4285f4' } });
+  await flush(); await flush();
+  assert.deepEqual(s.sent.at(-1), { id: 'edge-focus-grouped', status: 'ERROR', result: 'ERROR_NO_BROWSER_WINDOW' });
+  assert.deepEqual(f.calls, []);
+});
+test('Edge grouped open through a stale window hands off when creation rejects', async () => {
+  const f = fixture([tab(1, 'https://other.example/')]);
+  const s = await f.auth();
+  f.c.connection.pairing = { ...pairing, browser: 'edge' };
+  f.api.tabs.create = async () => { throw new Error('stale Edge window rejects creation'); };
+  s.message({ id: 'edge-focus-stale-create', action: 'FOCUS_OR_OPEN', url: 'https://example.com/', match_mode: 'domain_or_exact', tab_group: { name: 'Work', color: '#4285f4' } });
+  await flush(); await flush();
+  assert.deepEqual(s.sent.at(-1), { id: 'edge-focus-stale-create', status: 'ERROR', result: 'ERROR_NO_BROWSER_WINDOW' });
+  assert.deepEqual(f.calls, []);
+});
+test('non-Edge creation failure still reports a browser API error', async () => {
+  const f = fixture([tab(1, 'https://other.example/')]);
+  f.api.storage.local.get = async () => ({ pairing: { ...pairing, browser: 'chrome' } });
+  const s = await f.auth();
+  f.api.tabs.create = async () => { throw new Error('transient failure'); };
+  s.message({ id: 'chrome-create-fails', action: 'FOCUS_OR_OPEN', url: 'https://example.com/', match_mode: 'domain_or_exact' });
+  await flush(); await flush();
+  assert.deepEqual(s.sent.at(-1), { id: 'chrome-create-fails', status: 'ERROR', result: 'ERROR_BROWSER_API' });
+});
 test('unsupported groups open ordinary tabs with a visible note and close fails safely', async () => {
   const f = fixture(); const s = await f.auth();
   s.message(groupRequest()); await flush(); await flush();

@@ -5,6 +5,7 @@ use crate::{
     ws_server::{MatchMode, ServerHandle},
 };
 use serde::Serialize;
+use std::time::{Duration, Instant};
 
 #[derive(Debug, Serialize)]
 pub struct LaunchOutcome {
@@ -134,18 +135,23 @@ pub async fn open_url_with_group_guarded(
     })
     .await
     .map_err(|_| "Browser launch task failed")??;
+    let note = if tab_group.is_some() {
+        Some(if details.incognito {
+            format!("Opened normally in {browser_id}; incognito launches cannot use native tab grouping")
+        } else {
+            format!("Opened normally in {browser_id}; native grouping needs the {browser_id} companion connected")
+        })
+    } else {
+        details
+            .container
+            .map(|_| "Container needs companion; opened normally".into())
+    };
     Ok(LaunchOutcome {
         browser_id,
         result: "PROCESS_STARTED".into(),
         window_id: None,
         tab_id: None,
-        note: if tab_group.is_some() {
-            Some("Opened normally; browser grouping needs a supported companion and non-incognito launch".into())
-        } else {
-            details
-                .container
-                .map(|_| "Container needs companion; opened normally".into())
-        },
+        note,
     })
 }
 
@@ -334,26 +340,115 @@ pub async fn group_action_guarded(
                 details.browser_id
             ));
         } else {
-            let options = BrowserOptions {
-                container: details.container,
-                profile: details.profile,
-                incognito: Some(details.incognito),
-            };
-            for url in urls.iter() {
-                open_url_with_options_guarded(
-                    config,
-                    None,
-                    url,
-                    Some(&details.browser_id),
-                    MatchMode::NewTab,
-                    Some(&options),
-                    still_valid.clone(),
-                )
-                .await?;
-                outcome.processed += 1;
-            }
-            outcome.note = Some("Opened regular tabs; grouping needs a supported companion and non-incognito launch".into());
+            cold_launch_batch(
+                config,
+                companion,
+                &details,
+                &urls,
+                hint,
+                still_valid.clone(),
+                &mut outcome,
+            )
+            .await?;
         }
     }
     Ok(outcome)
+}
+
+/// Cold-start fallback for an open batch no companion could group: launch one
+/// process per argv chunk carrying every URL, so the browser opens its tabs
+/// together instead of one process per URL. When this is not a private launch
+/// and a companion server exists, wait bounded for the fresh browser's
+/// companion and group the tabs natively. Regroup attempts reuse exact URLs,
+/// so waiting retries cannot duplicate tabs; any ambiguous failure keeps the
+/// opened tabs as-is without further retry.
+async fn cold_launch_batch(
+    config: &Config,
+    companion: Option<&ServerHandle>,
+    details: &crate::RouteDetails,
+    urls: &[String],
+    hint: &crate::ws_protocol::TabGroupHint,
+    still_valid: std::sync::Arc<dyn Fn() -> bool + Send + Sync>,
+    outcome: &mut GroupOutcome,
+) -> Result<(), String> {
+    let options = BrowserOptions {
+        container: details.container.clone(),
+        profile: details.profile.clone(),
+        incognito: Some(details.incognito),
+    };
+    let launched: Vec<String> = urls.to_vec();
+    let (config, selected, first) = (
+        config.clone(),
+        details.browser_id.clone(),
+        launched.first().cloned().unwrap_or_default(),
+    );
+    tokio::task::spawn_blocking(move || {
+        if !still_valid() {
+            return Err("Group action was cancelled; earlier tabs may have changed".to_string());
+        }
+        let plan =
+            crate::prepare_launch_with_options(&config, &first, Some(&selected), Some(&options))?;
+        crate::launch_browser_urls(&plan.exe_path, &launched, &plan.args)
+    })
+    .await
+    .map_err(|_| "Browser launch task failed")??;
+    outcome.processed += urls.len() as u32;
+    if details.incognito {
+        outcome.note = Some(format!(
+            "Opened ordinary tabs in {}; incognito launches cannot use native tab grouping",
+            details.browser_id
+        ));
+        return Ok(());
+    }
+    let Some(server) = companion else {
+        outcome.note = Some(format!(
+            "Opened ordinary tabs in {}; native grouping needs the {} companion connected",
+            details.browser_id, details.browser_id
+        ));
+        return Ok(());
+    };
+    const REGROUP_WAIT: Duration = Duration::from_secs(10);
+    let start = Instant::now();
+    while start.elapsed() < REGROUP_WAIT {
+        if !still_valid() {
+            return Err("Group action was cancelled; earlier tabs may have changed".into());
+        }
+        if server
+            .instances()
+            .iter()
+            .any(|i| i.browser == details.browser_id)
+        {
+            match server
+                .group_tabs_guarded(
+                    crate::ws_server::GroupCommand {
+                        browser: &details.browser_id,
+                        urls,
+                        hint,
+                        container: details.container.as_deref(),
+                        profile: details.profile.as_deref(),
+                        close: false,
+                    },
+                    still_valid.clone(),
+                )
+                .await
+            {
+                Ok(Some(reply)) => {
+                    outcome.note = reply.note;
+                    return Ok(());
+                }
+                // No usable window yet, or the instance vanished between poll
+                // and dispatch: keep waiting for the window to open.
+                Ok(None) => {}
+                Err(error) if error.starts_with("Group action was cancelled") => return Err(error),
+                // Any other failure is reported once without further retry.
+                Err(_) => break,
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
+    outcome.note = Some(format!(
+        "Opened ordinary tabs in {}; native grouping needs the {} companion connected",
+        details.browser_id, details.browser_id
+    ));
+    Ok(())
 }

@@ -437,7 +437,11 @@ impl ServerHandle {
             {
                 Ok(Some(response))
             }
-            Ok(Ok(_)) => Err("Companion could not focus or open the tab".into()),
+            Ok(Ok(response)) => Err(format!(
+                "Companion could not focus or open the tab ({})",
+                response.result
+            )
+            .into()),
             Ok(Err(_)) => {
                 Err("Companion disconnected; the request may already have opened a tab".into())
             }
@@ -711,6 +715,10 @@ impl ServerHandle {
         };
         match result {
             Ok(Ok(response)) if response.status == "SUCCESS" || (close && response.result == "ERROR_TAB_NOT_FOUND") => Ok(Some(response)),
+            // Background-only Edge reports this before any tab mutation, so
+            // opening safely falls back to a plain process launch exactly like
+            // a missing companion. Closing has no fallback and keeps the error.
+            Ok(Ok(response)) if !close && response.result == "ERROR_NO_BROWSER_WINDOW" => Ok(None),
             Ok(Ok(_)) => Err("Companion could not finish the group action; some tabs may have changed. No retry was made".into()),
             _ => Err("Companion timed out or disconnected; some tabs may have changed. No retry was made".into()),
         }

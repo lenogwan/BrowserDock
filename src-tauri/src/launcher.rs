@@ -140,7 +140,12 @@ pub fn build_command(
 }
 
 pub fn launch_browser(exe_path: &str, url: &str, extra_args: &[String]) -> Result<(), String> {
-    let mut child = build_command(exe_path, url, extra_args)?
+    let mut command = build_command(exe_path, url, extra_args)?;
+    spawn_detached(&mut command)
+}
+
+fn spawn_detached(command: &mut Command) -> Result<(), String> {
+    let mut child = command
         .spawn()
         .map_err(|error| format!("Could not start browser: {error}"))?;
     // Browser launchers often exit immediately after forwarding to an existing
@@ -161,6 +166,69 @@ pub fn launch_browser(exe_path: &str, url: &str, extra_args: &[String]) -> Resul
             });
         }
         Err(_) => {}
+    }
+    Ok(())
+}
+
+/// Windows command lines cap at 32767 characters; stay well under it so
+/// cold-start batch launches never fail on argv length.
+pub const MAX_LAUNCH_ARGV_BYTES: usize = 24_000;
+
+/// Split URLs into argv chunks, each within the launch bound. A single URL
+/// larger than the bound still launches alone rather than being dropped or
+/// split mid-URL. Pure so tests pin the batching without spawning processes.
+pub fn chunk_urls_for_launch(
+    exe_path: &str,
+    extra_args: &[String],
+    urls: &[String],
+) -> Vec<Vec<String>> {
+    let base = exe_path.len()
+        + extra_args.iter().map(|a| a.len() + 1).sum::<usize>()
+        + 1;
+    let mut chunks: Vec<Vec<String>> = Vec::new();
+    let mut current: Vec<String> = Vec::new();
+    let mut used = base;
+    for url in urls {
+        if used + url.len() + 1 > MAX_LAUNCH_ARGV_BYTES && !current.is_empty() {
+            used = base;
+            chunks.push(std::mem::take(&mut current));
+        }
+        used += url.len() + 1;
+        current.push(url.clone());
+    }
+    if !current.is_empty() {
+        chunks.push(current);
+    }
+    chunks
+}
+
+/// Cold-start helper: one browser process per argv chunk with every URL as a
+/// separate trailing argument, so the browser opens its tabs together in one
+/// window instead of one process per URL.
+pub fn launch_browser_urls(
+    exe_path: &str,
+    urls: &[String],
+    extra_args: &[String],
+) -> Result<(), String> {
+    if urls.is_empty() {
+        return Err("No URLs to launch".into());
+    }
+    if urls.len() > 50 {
+        return Err("A launch batch must contain 1–50 URLs".into());
+    }
+    for url in urls {
+        routing::parse_url(url).map_err(|_| "Cannot launch an invalid URL")?;
+    }
+    for chunk in chunk_urls_for_launch(exe_path, extra_args, urls) {
+        let mut command = Command::new(exe_path);
+        command
+            .args(extra_args)
+            .args(chunk)
+            // Browser output can include sensitive URLs. Do not inherit dock logging.
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        spawn_detached(&mut command)?;
     }
     Ok(())
 }

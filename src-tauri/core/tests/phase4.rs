@@ -45,6 +45,30 @@ async fn edge_without_a_window_launches_process_only_for_explicit_safe_handoff()
 }
 
 #[tokio::test]
+async fn focus_failure_names_the_companion_result_code() {
+    let server = BoundServer::bind(0, TOKEN).await.unwrap().start();
+    let mut socket = connect(server.port(), "firefox", &uuid::Uuid::new_v4().to_string()).await;
+    let handle = server.clone();
+    let task = tokio::spawn(async move {
+        handle
+            .focus_or_open("firefox", "https://example.org", MatchMode::Exact)
+            .await
+    });
+    let request = read(&mut socket).await;
+    assert_eq!(request["action"], "FOCUS_OR_OPEN");
+    socket.send(Message::Text(json!({"id":request["id"],"status":"ERROR","result":"ERROR_BROWSER_API"}).to_string())).await.unwrap();
+    assert!(task
+        .await
+        .unwrap()
+        .unwrap_err()
+        .contains("ERROR_BROWSER_API"));
+    assert!(timeout(Duration::from_millis(30), socket.next())
+        .await
+        .is_err());
+    server.shutdown();
+}
+
+#[tokio::test]
 async fn fallback_port_is_persisted_without_changing_token() {
     use browserdock_launcher::{config::Config, ws_server::start_configured};
     let occupied = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();

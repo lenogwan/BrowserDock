@@ -422,7 +422,15 @@ class Companion {
     const window = choices.find(w => w.focused) ?? this.recentWindows.map(id => choices.find(w => w.id === id)).find(Boolean) ?? choices[0];
     let created;
     if (window) {
-      created = await this.api.tabs.create({ url: target.href, active: true, windowId: window.id, ...(cookieStoreId ? { cookieStoreId } : {}) });
+      try {
+        created = await this.api.tabs.create({ url: target.href, active: true, windowId: window.id, ...(cookieStoreId ? { cookieStoreId } : {}) });
+      } catch {
+        // Creation through a stale background-only Edge window rejects
+        // without creating a tab, so handing off for process launch cannot
+        // duplicate anything. Other browsers keep the API error.
+        if (ctx.pairing.browser === 'edge') return error('ERROR_NO_BROWSER_WINDOW');
+        throw new Error('tab create failed');
+      }
     } else if (cookieStoreId) {
       const opened = await this.api.windows.create({ incognito: false, focused: true });
       if (this.requestError(ctx, request)) return error(this.requestError(ctx, request));
@@ -498,6 +506,13 @@ class Companion {
     const error = result => ({ id: request.id, status: 'ERROR', result });
     if (!Array.isArray(request.urls) || !request.urls.length || request.urls.length > 50 || request.urls.some(url => !safeUrl(url)) || !validGroup(request.tab_group)) return error('ERROR_INVALID_REQUEST');
     const { cookieStoreId, windows } = await this.groupContext(ctx, request);
+    // Edge can keep the companion alive after its last window closes. Hand
+    // off before any tab operation so the dock can safely launch Edge
+    // instead of failing window creation in that background-only state.
+    if (ctx.pairing.browser === 'edge' && !windows.length) {
+      this.checkRequest(ctx, request);
+      return error('ERROR_NO_BROWSER_WINDOW');
+    }
     const preferPrivate = ctx.pairing.includePrivate === true && ctx.pairing.browser === 'mullvad';
     const preferred = windows.filter(w => !!w.incognito === preferPrivate);
     const choices = preferred.length ? preferred : windows;
@@ -507,7 +522,16 @@ class Companion {
       window = await this.api.windows.create({ incognito: preferPrivate && !cookieStoreId, focused: true });
     }
     this.checkRequest(ctx, request);
-    const all = await this.api.tabs.query({ windowId: window.id });
+    let all;
+    try {
+      all = await this.api.tabs.query({ windowId: window.id });
+    } catch {
+      // A hidden/background-only Edge process can reject tab inventory even
+      // though windows.getAll returned a stale window record. Hand off before
+      // any mutation, mirroring focus().
+      if (ctx.pairing.browser === 'edge') return error('ERROR_NO_BROWSER_WINDOW');
+      throw new Error('tab query failed');
+    }
     this.checkRequest(ctx, request);
     const tabs = [];
     for (const url of [...new Set(request.urls.map(url => safeUrl(url).href))]) {

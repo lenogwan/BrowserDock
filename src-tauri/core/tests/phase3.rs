@@ -64,6 +64,72 @@ fn real_spawn_delivers_url_as_one_final_argument() {
 }
 
 #[test]
+fn url_batches_split_only_past_the_argv_bound() {
+    let small: Vec<String> = (0..3).map(|i| format!("https://example.org/{i}")).collect();
+    assert_eq!(
+        browserdock_launcher::chunk_urls_for_launch("C:\\Edge\\msedge.exe", &[], &small),
+        vec![small.clone()]
+    );
+    let big: Vec<String> = (0..3)
+        .map(|i| format!("https://example.org/{i}?q={}", "x".repeat(15_000)))
+        .collect();
+    let chunks = browserdock_launcher::chunk_urls_for_launch("C:\\Edge\\msedge.exe", &[], &big);
+    assert_eq!(chunks.iter().map(Vec::len).collect::<Vec<_>>(), [1, 1, 1]);
+    assert_eq!(chunks.concat(), big);
+    assert!(browserdock_launcher::chunk_urls_for_launch("C:\\Edge\\msedge.exe", &[], &[]).is_empty());
+}
+
+#[cfg(unix)]
+#[test]
+fn multi_url_spawn_delivers_every_url_as_trailing_arguments() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir().unwrap();
+    let executable = dir.path().join("browser fixture");
+    let output = dir.path().join("received");
+    std::fs::write(
+        &executable,
+        "#!/bin/sh\noutput=$1\nshift\nprintf '%s\\n' \"$@\" > \"$output\"\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o700)).unwrap();
+    browserdock_launcher::launch_browser_urls(
+        executable.to_str().unwrap(),
+        &[
+            "https://one.test/".into(),
+            "https://two.test/".into(),
+            "https://three.test/".into(),
+        ],
+        &[output.to_str().unwrap().into()],
+    )
+    .unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+    loop {
+        if std::fs::read_to_string(&output).ok().as_deref()
+            == Some("https://one.test/\nhttps://two.test/\nhttps://three.test/\n")
+        {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "browser did not receive every URL as trailing arguments"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    assert!(browserdock_launcher::launch_browser_urls(
+        executable.to_str().unwrap(),
+        &[],
+        &[]
+    )
+    .is_err());
+    assert!(browserdock_launcher::launch_browser_urls(
+        executable.to_str().unwrap(),
+        &["not a url".into()],
+        &[]
+    )
+    .is_err());
+}
+
+#[test]
 fn invalid_config_save_preserves_previous_file() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("config.json");

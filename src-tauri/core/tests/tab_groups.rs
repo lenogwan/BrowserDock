@@ -199,6 +199,144 @@ async fn ambiguous_group_failure_is_not_retried() {
         .is_err());
     server.shutdown();
 }
+#[cfg(unix)]
+#[tokio::test]
+async fn background_only_edge_group_open_launches_then_regroups() {
+    let server = BoundServer::bind(0, TOKEN).await.unwrap().start();
+    let (mut socket, _) = connect_async(format!("ws://127.0.0.1:{}", server.port()))
+        .await
+        .unwrap();
+    socket.send(Message::Text(json!({"type":"AUTH","token":TOKEN,"browser":"edge","instance_id":uuid::Uuid::new_v4().to_string(),"capabilities":["tab_groups_v1"]}).to_string())).await.unwrap();
+    assert_eq!(read(&mut socket).await["type"], "AUTH_OK");
+    let dir = tempfile::tempdir().unwrap();
+    let marker = dir.path().join("launched-url");
+    let mut config = Config::default();
+    let edge = config.browsers.iter_mut().find(|b| b.id == "edge").unwrap();
+    edge.exe_path = "/bin/sh".into();
+    edge.args = vec!["-c".into(), "printf '%s' \"$2\" > \"$1\"".into(), "edge-test".into(), marker.to_str().unwrap().into()];
+    let bookmark: Bookmark = serde_json::from_value(json!({"id":"yt","title":"YouTube","url":"https://www.youtube.com/","target_browser":"edge","tags":[],"icon":""})).unwrap();
+    let handle = server.clone();
+    let task = tokio::spawn(async move {
+        group_action_guarded(
+            &config,
+            Some(&handle),
+            &[bookmark],
+            &hint(),
+            None,
+            false,
+            Arc::new(|| true),
+        )
+        .await
+    });
+    let request = read(&mut socket).await;
+    assert_eq!(request["action"], "OPEN_GROUP");
+    reply(&mut socket, &request, "ERROR_NO_BROWSER_WINDOW").await;
+    timeout(Duration::from_secs(2), async {
+        while std::fs::read_to_string(&marker).ok().as_deref() != Some("https://www.youtube.com/") {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    }).await.expect("Edge process fallback did not receive the URL");
+    // The still-connected companion gets one regroup attempt for the window
+    // the launch just opened; answering it groups natively with no new launch.
+    let regroup = read(&mut socket).await;
+    assert_eq!(regroup["action"], "OPEN_GROUP");
+    assert_eq!(regroup["urls"], json!(["https://www.youtube.com/"]));
+    reply(&mut socket, &regroup, "OPENED_GROUP").await;
+    let outcome = task.await.unwrap().unwrap();
+    assert_eq!(outcome.processed, 1);
+    assert!(outcome.note.is_none());
+    assert!(timeout(Duration::from_millis(30), socket.next())
+        .await
+        .is_err());
+    server.shutdown();
+}
+fn edge_bookmark(id: &str) -> Bookmark {
+    serde_json::from_value(json!({"id":id,"title":id,"url":format!("https://{id}.test/"),"target_browser":"edge","tags":[],"icon":""})).unwrap()
+}
+#[cfg(unix)]
+#[tokio::test]
+async fn cold_group_open_launches_once_then_groups_on_late_connect() {
+    let server = BoundServer::bind(0, TOKEN).await.unwrap().start();
+    let dir = tempfile::tempdir().unwrap();
+    let marker = dir.path().join("launched");
+    let mut config = Config::default();
+    let edge = config.browsers.iter_mut().find(|b| b.id == "edge").unwrap();
+    edge.exe_path = "/bin/sh".into();
+    edge.args = vec!["-c".into(), "printf '%s\\n' \"$@\" >> \"$0\"".into(), marker.to_str().unwrap().into()];
+    let handle = server.clone();
+    let task = tokio::spawn(async move {
+        group_action_guarded(
+            &config,
+            Some(&handle),
+            &[edge_bookmark("a"), edge_bookmark("b")],
+            &hint(),
+            None,
+            false,
+            Arc::new(|| true),
+        )
+        .await
+    });
+    // No companion is connected, so both URLs launch in a single process
+    // before anything connects.
+    timeout(Duration::from_secs(3), async {
+        while std::fs::read_to_string(&marker).ok().as_deref() != Some("https://a.test/\nhttps://b.test/\n") {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    }).await.expect("cold launch did not deliver both URLs in one process");
+    // The browser finishes starting and its companion connects late.
+    let (mut socket, _) = connect_async(format!("ws://127.0.0.1:{}", server.port()))
+        .await
+        .unwrap();
+    socket.send(Message::Text(json!({"type":"AUTH","token":TOKEN,"browser":"edge","instance_id":uuid::Uuid::new_v4().to_string(),"capabilities":["tab_groups_v1"]}).to_string())).await.unwrap();
+    assert_eq!(read(&mut socket).await["type"], "AUTH_OK");
+    let request = read(&mut socket).await;
+    assert_eq!(request["action"], "OPEN_GROUP");
+    assert_eq!(request["urls"], json!(["https://a.test/", "https://b.test/"]));
+    reply(&mut socket, &request, "OPENED_GROUP").await;
+    let outcome = task.await.unwrap().unwrap();
+    assert_eq!(outcome.processed, 2);
+    assert!(outcome.note.is_none());
+    server.shutdown();
+}
+#[cfg(unix)]
+#[tokio::test]
+async fn cold_group_open_without_companion_keeps_plain_tabs_and_names_the_browser() {
+    let server = BoundServer::bind(0, TOKEN).await.unwrap().start();
+    let dir = tempfile::tempdir().unwrap();
+    let marker = dir.path().join("launched");
+    let mut config = Config::default();
+    let edge = config.browsers.iter_mut().find(|b| b.id == "edge").unwrap();
+    edge.exe_path = "/bin/sh".into();
+    edge.args = vec!["-c".into(), "printf '%s\\n' \"$@\" >> \"$0\"".into(), marker.to_str().unwrap().into()];
+    let handle = server.clone();
+    let task = tokio::spawn(async move {
+        group_action_guarded(
+            &config,
+            Some(&handle),
+            &[edge_bookmark("a"), edge_bookmark("b")],
+            &hint(),
+            None,
+            false,
+            Arc::new(|| true),
+        )
+        .await
+    });
+    let outcome = timeout(Duration::from_secs(15), task)
+        .await
+        .expect("cold fallback waited past its bound")
+        .unwrap()
+        .unwrap();
+    assert_eq!(outcome.processed, 2);
+    assert_eq!(
+        outcome.note.as_deref(),
+        Some("Opened ordinary tabs in edge; native grouping needs the edge companion connected")
+    );
+    assert_eq!(
+        std::fs::read_to_string(&marker).ok().as_deref(),
+        Some("https://a.test/\nhttps://b.test/\n")
+    );
+    server.shutdown();
+}
 fn bookmark(id: &str, container: &str) -> Bookmark {
     serde_json::from_value(json!({"id":id,"title":id,"url":format!("https://{id}.test/"),"target_browser":"firefox","tags":[],"icon":"","group_id":"work","browser_options":{"container":container}})).unwrap()
 }
