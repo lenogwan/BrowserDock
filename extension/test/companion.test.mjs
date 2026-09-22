@@ -487,6 +487,32 @@ test('grouping API rejection reports opened tabs and never recreates them', asyn
   assert.match(s.sent.at(-1).note, /could not finish/);
   assert.equal(f.calls.filter(c => c[0] === 'create').length, 2);
 });
+test('collapsed group fallback activates its first tab without replaying opens', async () => {
+  for (const unavailable of [true, false]) {
+    const f = fixture([tab(1, 'https://one.test/')]);
+    if (!unavailable) {
+      withGroups(f);
+      f.api.tabs.group = async () => { throw Error('disabled'); };
+    }
+    const s = await f.auth(); const request = groupRequest();
+    s.message(request); await flush(); await flush();
+    s.message(request); await flush();
+    assert.equal(s.sent.at(-1).result, 'OPENED_GROUP');
+    assert.ok(s.sent.at(-1).note);
+    assert.equal(f.calls.filter(c => c[0] === 'create').length, 1);
+    assert.deepEqual(f.calls.filter(c => c[0] === 'update'), [['update', 1, { active: true }]]);
+    assert.deepEqual(f.calls.at(-1), ['window', 10, { focused: true }]);
+  }
+});
+test('successful collapsed groups stay collapsed without activating a member', async () => {
+  const f = withGroups(fixture([tab(1, 'https://one.test/')]));
+  const s = await f.auth();
+  s.message(groupRequest()); await flush(); await flush();
+  assert.equal(s.sent.at(-1).result, 'OPENED_GROUP');
+  assert.equal(s.sent.at(-1).note, undefined);
+  assert.equal(f.calls.find(c => c[0] === 'group-update')[2].collapsed, true);
+  assert.equal(f.calls.filter(c => c[0] === 'update').length, 0);
+});
 test('close group removes only matching non-shared, eligible container tabs', async () => {
   const f = withGroups(fixture([
     tab(1, 'https://one.test/', { groupId: 8, cookieStoreId: 'firefox-container-1' }),

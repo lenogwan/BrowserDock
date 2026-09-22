@@ -10,6 +10,7 @@ export type Bookmark = {
   icon: string;
   private?: boolean;
   group_id?: string | null;
+  parent_id?: string | null;
   sort_order?: number;
   pinned?: boolean;
   browser_options?: { profile?: string | null; container?: string | null; incognito?: boolean };
@@ -24,7 +25,9 @@ export type Browser = {
   profile?: string | null;
   container?: string | null;
 };
+export type ThemeId = "sage" | "nord" | "amber" | "tokyo" | "rose";
 export type Settings = {
+  theme: ThemeId;
   window_size: WindowSize;
   always_on_top: boolean;
   auto_hide: boolean;

@@ -1,16 +1,19 @@
 <script lang="ts">
   import { ArrowUpRight, ChevronDown, ChevronRight, LockKeyhole, Pencil, Pin, X } from "lucide-svelte";
-  import { onMount, tick, untrack } from "svelte";
+  import { onMount, onDestroy, tick, untrack } from "svelte";
+  import { visibleTree, canNest, siblingOrder } from "./trees.js";
+  import type { TreeNode } from "./trees.js";
   import { targetLabel } from "./groups.js";
   import { isTabOpen } from "./search.js";
   import { browserGroupFor, hasBrowserGroup, groupColor } from "./tab-groups.js";
   import { entryKey } from "./ids.js";
   import type { Bookmark, Group, Browser, InstanceDigest } from "./types";
-  type Section = { group: Group | null; private: boolean; items: Bookmark[] };
+  type Section = { group: Group | null; private: boolean; items: Bookmark[]; roots?: TreeNode[] };
   // Flat render node: headers carry no item, rows carry no header flag.
   // A single shape avoids fragile template type-narrowing.
-  type VNode = { key: string; section: Section; item: Bookmark | null; open: boolean };
+  type VNode = { key: string; section: Section; item: Bookmark | null; open: boolean; depth: number };
   let {
+    treeIndex, treeExpanded, ontoggletree, onopensubtree,
     sections, instances = [], busy = false, onopengroup, onclosegroup,
     activeKey,
     navTick,
@@ -21,6 +24,10 @@
     onedit,
     groups = [], browsers = [], grouped = false, ongroup, ontoggle, onmove,
   }: {
+    treeIndex: Map<string, TreeNode>;
+    treeExpanded: Record<string, boolean>;
+    ontoggletree: (bookmark: Bookmark) => void;
+    onopensubtree: (bookmark: Bookmark) => void;
     sections: Section[];
     instances?: InstanceDigest[]; busy?: boolean;
     onopengroup: (group: Group) => void;
@@ -29,7 +36,7 @@
     navTick: number;
     groups?: Group[]; browsers?: Browser[]; grouped?: boolean;
     ongroup: (group: Group) => void; ontoggle: (group: Group) => void;
-    onmove: (id: string, groupId: string | null, index: number, privateScope: boolean) => Promise<void>;
+    onmove: (id: string, groupId: string | null, index: number, privateScope: boolean, parentId?: string | null) => Promise<void>;
     openTabs: { base: Set<string>; stored: Set<string> };
     onopen: (bookmark: Bookmark, force: boolean) => void;
     onclose: (bookmark: Bookmark) => void;
@@ -49,17 +56,18 @@
   let viewportH = $state(400);
   let listTop = $state(0);
   let measured = $state(new Map<string, { top: number; height: number }>());
-  const nodes = $derived<VNode[]>(buildNodes(sections, grouped, openTabs));
+  const nodes = $derived<VNode[]>(buildNodes(sections, grouped, openTabs, treeExpanded));
   const virtualized = $derived(nodes.length > VIRTUALIZE_AFTER);
-  function buildNodes(sections: Section[], grouped: boolean, openTabs: { base: Set<string>; stored: Set<string> }): VNode[] {
+  function buildNodes(sections: Section[], grouped: boolean, openTabs: { base: Set<string>; stored: Set<string> }, expanded: Record<string, boolean>): VNode[] {
     const out: VNode[] = [];
     for (const section of sections) {
       if (grouped && section.group) {
-        out.push({ key: `${section.group.id}:${section.private ? "private" : "public"}:header`, section, item: null, open: false });
+        out.push({ key: `${section.group.id}:${section.private ? "private" : "public"}:header`, section, item: null, open: false, depth: 0 });
       }
       if (!grouped || !section.group?.collapsed) {
-        for (const item of section.items) {
-          out.push({ key: entryKey(item), section, item, open: isTabOpen(item, openTabs) });
+        const rows = grouped ? visibleTree(section.roots ?? [], expanded) : section.items.map(item=>({item,depth:0}));
+        for (const {item, depth} of rows) {
+          out.push({ key: entryKey(item), section, item, depth, open: isTabOpen(item, openTabs) });
         }
       }
     }
@@ -88,6 +96,11 @@
     const topPad = start >= nodes.length ? total : (tops[start] ?? 0);
     const endBottom = end > start ? tops[end - 1] + nodeHeight(nodes[end - 1]) : topPad;
     return { total, start, end, topPad, bottomPad: Math.max(0, total - endBottom) };
+  });
+  let measuredOrder = "";
+  $effect(()=>{
+    const order=JSON.stringify(nodes.map(node=>node.key));
+    if(order!==measuredOrder) {measuredOrder=order;untrack(()=>measured=new Map());}
   });
   const visible = $derived(nodes.slice(layout.start, layout.end));
   function measureList() {
@@ -169,9 +182,44 @@
     const key = untrack(() => activeKey);
     if (key) void tick().then(() => scrollToKey(key));
   });
-  async function drop(group:Group|null,index:number,privateScope:boolean){
-    const item=dragging; dragging=null;dropTarget="";
-    if(item && !!item.private===privateScope) await onmove(item.id,group?.id??null,index,privateScope);
+  let intentTimer: ReturnType<typeof setTimeout> | undefined;
+  let intentKey = "";
+  function cancelDrag() {clearTimeout(intentTimer);intentKey="";dragging=null;dropTarget="";}
+  onDestroy(cancelDrag);
+  $effect(()=>{if(dragging && !treeIndex.has(entryKey(dragging)))cancelDrag();});
+  onMount(()=>{
+    const cancel=(e:KeyboardEvent)=>{if(e.key==='Escape' && dragging){e.preventDefault();e.stopImmediatePropagation();cancelDrag();}};
+    window.addEventListener('keydown',cancel,true);
+    return ()=>window.removeEventListener('keydown',cancel,true);
+  });
+  function dragOver(e: DragEvent, item: Bookmark) {
+    if(!dragging || !!dragging.private!==!!item.private || dragging.id===item.id)return;
+    e.preventDefault();e.stopPropagation();
+    const rect=(e.currentTarget as HTMLElement).getBoundingClientRect();
+    const key=entryKey(item);
+    if(e.clientY-rect.top<10) {
+      clearTimeout(intentTimer);intentKey="";dropTarget=`insert:${key}`;return;
+    }
+    if(!canNest([...treeIndex.values()].map(n=>n.item),dragging,item)) {clearTimeout(intentTimer);intentKey="";dropTarget="";return;}
+    if(intentKey===key)return;
+    clearTimeout(intentTimer);intentKey=key;dropTarget="";
+    intentTimer=setTimeout(()=>{if(dragging && intentKey===key)dropTarget=`nest:${key}`;},250);
+  }
+  async function drop(group:Group|null,index:number,privateScope:boolean,parentId:string|null){
+    const item=dragging;cancelDrag();
+    if(item && !!item.private===privateScope)await onmove(item.id,group?.id??null,index,privateScope,parentId);
+  }
+  function dropRow(e:DragEvent,node:VNode) {
+    e.preventDefault();e.stopPropagation();
+    const item=node.item;if(!item || !dragging)return;
+    const key=entryKey(item);
+    if(dropTarget===`nest:${key}`) {
+      const count=treeIndex.get(key)?.children.filter(n=>n.item.id!==dragging?.id).length??0;
+      void drop(node.section.group,count,!!item.private,item.id);
+    } else if(dropTarget===`insert:${key}`) {
+      const siblings=node.section.items.filter(b=>(b.parent_id??null)===(item.parent_id??null)&&b.id!==dragging?.id).sort(siblingOrder);
+      void drop(node.section.group,siblings.indexOf(item),!!item.private,item.parent_id??null);
+    } else cancelDrag();
   }
   function host(url: string) {
     try {
@@ -218,8 +266,8 @@
       {@const sectionItems = node.section.items}
       <!-- svelte-ignore a11y_no_static_element_interactions -->
       <section data-vkey={node.key} class:drop-group={dropTarget === (group.id + ':' + isPrivate)}
-        ondragover={e=>{if(grouped && dragging && !!dragging.private===isPrivate){e.preventDefault();dropTarget=(group.id + ':' + isPrivate)}}}
-        ondrop={e=>{e.preventDefault();void drop(group,sectionItems.filter(b=>b.id!==dragging?.id).length,isPrivate)}}>
+        ondragover={e=>{if(grouped && dragging && !!dragging.private===isPrivate){e.preventDefault();clearTimeout(intentTimer);intentKey='';dropTarget=(group.id + ':' + isPrivate)}}}
+        ondrop={e=>{e.preventDefault();void drop(group,sectionItems.filter(b=>!b.parent_id && b.id!==dragging?.id).length,isPrivate,null)}}>
         <div class="group-header">
           <button class="group-title" aria-expanded={!group.collapsed} onclick={()=>ontoggle(group)}>
             <span style:background={group.color || 'var(--muted)'} class="group-dot"></span>{#if group.collapsed}<ChevronRight size={12} />{:else}<ChevronDown size={12} />{/if} <span class="group-name">{group.name ?? 'Ungrouped'}{isPrivate?' · private':''}</span><small>{sectionItems.length}</small>
@@ -237,16 +285,19 @@
       {@const section = node.section}
       {@const nativeGroup = browserGroupFor(item, instances, browsers)}
       <!-- svelte-ignore a11y_no_static_element_interactions -->
-      <div data-vkey={node.key} class="result" class:active={node.key === activeKey} class:is-open={node.open} class:insertion={dropTarget === item.id} draggable={grouped}
+      <div data-vkey={node.key} class="result" class:active={node.key === activeKey} class:is-open={node.open} style:padding-left={`${node.depth * 10}px`} class:insertion={dropTarget === `insert:${node.key}`} class:nesting={dropTarget === `nest:${node.key}`} draggable={grouped}
         ondragstart={e=>{dragging=item;e.dataTransfer?.setData('text/plain',item.id);if(e.dataTransfer)e.dataTransfer.effectAllowed='move'}}
-        ondragend={()=>{dragging=null;dropTarget=""}}
-        ondragover={e=>{if(dragging&&!!dragging.private===!!item.private){e.preventDefault();e.stopPropagation();dropTarget=item.id}}}
-        ondrop={e=>{e.preventDefault();e.stopPropagation();void drop(section.group,section.items.slice(0,section.items.indexOf(item)).filter(b=>b.id!==dragging?.id).length,!!item.private)}}>
-        <button
-          class="result-main"
-          onclick={(e) => onopen(item, e.shiftKey)}
-          aria-label={`Open ${item.title} in ${item.target_browser}`}
-        >
+        ondragend={cancelDrag}
+        ondragover={e=>dragOver(e,item)}
+        ondragleave={e=>{if(!(e.currentTarget as HTMLElement).contains(e.relatedTarget as Node)){clearTimeout(intentTimer);intentKey="";dropTarget="";}}}
+        ondrop={e=>dropRow(e,node)}>
+        {#if (treeIndex.get(node.key)?.count ?? 0)>0}
+          <button class="tree-chevron" aria-expanded={!!treeExpanded[node.key]} title={`Expand or collapse ${item.title}`} aria-label={`Expand or collapse ${item.title}`} onclick={()=>ontoggletree(item)}>
+            {#if treeExpanded[node.key]}<ChevronDown size={12}/>{:else}<ChevronRight size={12}/>{/if}
+          </button>
+        {:else}<span class="tree-spacer" aria-hidden="true"></span>{/if}
+        <div class="result-main">
+          <button class="row-open" onclick={(e)=>onopen(item,e.shiftKey)} aria-label={`Open ${item.title} in ${item.target_browser}`}></button>
           <span class="monogram" class:private-mark={item.private}
             style:background={avatarWash(item) || undefined}
             style:border-color={avatarEdge(item) || undefined}
@@ -259,12 +310,12 @@
               ></span>{/if}</span
           >
           <span class="result-copy"
-            ><strong>{item.title}</strong><small>{host(item.url)}</small>{#if nativeGroup}<small class="native-group" style:color={groupColor(nativeGroup.groupColor)} title={`Browser tab group: ${nativeGroup.groupTitle}`}>{nativeGroup.groupTitle || "Untitled browser group"}</small>{/if}{#if !grouped && item.group_id}<small class="group-badge">{groups.find(g=>g.id===item.group_id && !!g.private===!!item.private)?.name ?? "Ungrouped"}</small>{/if}</span
+            ><span class="title-line"><strong>{item.title}</strong>{#if (treeIndex.get(node.key)?.count ?? 0)>0}<button class="tree-open" disabled={busy} title={`Open ${item.title} and all ${treeIndex.get(node.key)?.count} descendants`} aria-label={`Open subtree ${item.title}`} onclick={()=>onopensubtree(item)}>+{treeIndex.get(node.key)?.count}</button>{/if}</span><small>{host(item.url)}</small>{#if nativeGroup}<small class="native-group" style:color={groupColor(nativeGroup.groupColor)} title={`Browser tab group: ${nativeGroup.groupTitle}`}>{nativeGroup.groupTitle || "Untitled browser group"}</small>{/if}{#if !grouped && treeIndex.get(node.key)?.parent}<small class="parent-badge">{treeIndex.get(node.key)?.parent?.item.title}</small>{/if}{#if !grouped && item.group_id}<small class="group-badge">{groups.find(g=>g.id===item.group_id && !!g.private===!!item.private)?.name ?? "Ungrouped"}</small>{/if}</span
           >
           <span class="target" title={targetLabel(item,browsers)}
             >{targetLabel(item,browsers)}</span
-          >{#if item.pinned}<span class="pinned-tag">Pinned</span>{/if}<ArrowUpRight size={12} />
-        </button>
+          >{#if item.pinned}<span class="pinned-tag">Pinned</span>{/if}<span class="launch-icon"><ArrowUpRight size={12} /></span>
+        </div>
         <div class="row-actions">
         <button
           class="icon-button pin"
@@ -306,6 +357,20 @@
 </div>
 
 <style>
+  .tree-chevron,.tree-spacer {width:28px;flex-shrink:0;}
+  .tree-chevron {height:28px;display:grid;place-items:center;color:var(--muted);background:none;border-radius:5px;}
+  .tree-chevron:hover {color:var(--accent);background:var(--accent-alpha-12);}
+  .title-line {display:flex;align-items:center;gap:5px;min-width:0;}
+  .title-line strong {min-width:0;}
+  .tree-open {position:relative;z-index:1;pointer-events:auto;flex-shrink:0;background:var(--accent-alpha-12);color:var(--accent);border:1px solid var(--accent-alpha-33);border-radius:5px;padding:2px 4px;font-size:10px;height:18px;line-height:16px;padding-block:0;}
+  .result-main {position:relative;}
+  .result-main > span {pointer-events:none;}
+  .row-open {position:absolute;inset:0;background:none;border-radius:7px;}
+  .parent-badge {color:var(--accent);}
+  .result.nesting {background:var(--accent-alpha-12);outline:2px solid var(--accent);outline-offset:-2px;}
+  @media (max-width:480px) {.target,.launch-icon,.pinned-tag {display:none;}}
+  @media (max-width:340px) {.monogram {width:20px!important;height:20px!important}.result-main {gap:4px!important;padding:6px 2px!important}}
+
   .native-group {border:1px solid currentColor;border-radius:4px;padding:0 4px;width:fit-content;max-width:100%;font-size:9px;}
   .group-header { display:flex; align-items:center; margin:9px 0 3px; }
   .group-title {display:flex;align-items:center;gap:6px;flex:1;min-width:0;background:none;color:var(--muted);font-size:11px;padding:6px;text-align:left}
@@ -332,23 +397,23 @@
      so the two states never look identical. */
   .result.active {
     background: #ffffff07;
-    border-color: #b8edc955;
+    border-color: var(--accent-alpha-33);
     box-shadow: inset 2px 0 0 var(--accent);
   }
   .result.is-open {
-    background: #b8edc90d;
-    border-color: #b8edc92e;
+    background: var(--accent-alpha-12);
+    border-color: var(--accent-alpha-33);
   }
   .result.is-open.active {
-    background: #b8edc914;
-    border-color: #b8edc955;
+    background: var(--accent-alpha-12);
+    border-color: var(--accent-alpha-33);
     box-shadow: inset 2px 0 0 var(--accent);
   }
   .result:hover {
     background: #ffffff0a;
   }
   .result.is-open:hover {
-    background: #b8edc912;
+    background: var(--accent-alpha-12);
   }
   .result-main {
     display: flex;
@@ -381,12 +446,12 @@
     height: 8px;
     width: 8px;
     background: var(--accent);
-    border: 2px solid #171c1e;
+    border: 2px solid rgb(var(--surface-rgb));
     border-radius: 50%;
   }
   .private-mark {
     color: var(--accent);
-    background: #b8edc908;
+    background: var(--accent-alpha-12);
   }
   .result-copy {
     flex: 1;
@@ -423,7 +488,7 @@
     letter-spacing: 0.8px;
     text-transform: uppercase;
     color: var(--accent);
-    border: 1px solid #b8edc93d;
+    border: 1px solid var(--accent-alpha-33);
     border-radius: 5px;
     padding: 1px 5px;
   }

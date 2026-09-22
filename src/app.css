@@ -1,12 +1,70 @@
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
-:root {
+:root,
+[data-theme="sage"] {
   color-scheme: dark;
+  --surface-rgb: 23 28 30;
   --surface: #171c1ef5;
   --text: #e4e9e5;
   --muted: #89928f;
   --accent: #b8edc9;
+  --accent-contrast: #183524;
+  --accent-hover: #ccf5d8;
+  --accent-alpha-12: rgba(184, 237, 201, 0.12);
+  --accent-alpha-33: rgba(184, 237, 201, 0.33);
+}
+
+[data-theme="nord"] {
+  color-scheme: dark;
+  --surface-rgb: 30 34 42;
+  --surface: #1e222af5;
+  --text: #eceff4;
+  --muted: #8892b0;
+  --accent: #88c0d0;
+  --accent-contrast: #152d35;
+  --accent-hover: #a3d4e2;
+  --accent-alpha-12: rgba(136, 192, 208, 0.12);
+  --accent-alpha-33: rgba(136, 192, 208, 0.33);
+}
+
+[data-theme="amber"] {
+  color-scheme: dark;
+  --surface-rgb: 21 22 24;
+  --surface: #151618f5;
+  --text: #f5ede2;
+  --muted: #9a9184;
+  --accent: #f5a742;
+  --accent-contrast: #2b1700;
+  --accent-hover: #ffbe6a;
+  --accent-alpha-12: rgba(245, 167, 66, 0.12);
+  --accent-alpha-33: rgba(245, 167, 66, 0.33);
+}
+
+[data-theme="tokyo"] {
+  color-scheme: dark;
+  --surface-rgb: 26 27 38;
+  --surface: #1a1b26f5;
+  --text: #c0caf5;
+  --muted: #7982a9;
+  --accent: #bb9af7;
+  --accent-contrast: #201438;
+  --accent-hover: #d0b8f9;
+  --accent-alpha-12: rgba(187, 154, 247, 0.12);
+  --accent-alpha-33: rgba(187, 154, 247, 0.33);
+}
+
+[data-theme="rose"] {
+  color-scheme: dark;
+  --surface-rgb: 25 23 36;
+  --surface: #191724f5;
+  --text: #e0def4;
+  --muted: #908caa;
+  --accent: #ebbcba;
+  --accent-contrast: #261620;
+  --accent-hover: #f4cdc9;
+  --accent-alpha-12: rgba(235, 188, 186, 0.12);
+  --accent-alpha-33: rgba(235, 188, 186, 0.33);
 }
 html,
 body {
@@ -71,7 +129,7 @@ label {
   gap: 7px;
   font-size: 11px;
   font-weight: 500;
-  color: #bfc9c3;
+  color: var(--text);
 }
 label input:not([type="checkbox"]),
 label select {
@@ -93,10 +151,10 @@ label select {
 }
 .primary {
   background: var(--accent);
-  color: #183524;
+  color: var(--accent-contrast);
 }
 .primary:hover {
-  background: #ccf5d8;
+  background: var(--accent-hover);
 }
 .secondary {
   background: #ffffff08;

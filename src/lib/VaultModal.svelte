@@ -100,9 +100,9 @@
     place-items: center;
     width: 52px;
     height: 52px;
-    border: 1px solid #b8edc925;
+    border: 1px solid var(--accent-alpha-33);
     border-radius: 17px;
-    background: #b8edc906;
+    background: var(--accent-alpha-12);
     color: var(--accent);
   }
   h1 {

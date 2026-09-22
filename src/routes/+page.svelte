@@ -25,12 +25,15 @@
   import CompanionSetup from "$lib/CompanionSetup.svelte";  import GroupEditor from "$lib/GroupEditor.svelte";
   import ResizeGrip from "$lib/ResizeGrip.svelte";
   import { createSizeController } from "$lib/resize.js";
+  import { buildTree, visibleTree, loadExpansion, saveExpansion, purgePrivateExpansion } from "$lib/trees.js";
   import { groupSections, moveBookmark } from "$lib/groups.js";
   import { entryId, entryKey } from "$lib/ids.js";
   import BookmarkEditor from "$lib/BookmarkEditor.svelte";
   import { searchBookmarks, directUrl, shortcutBrowser, buildOpenTabIndex, isTabOpen, rankResults } from "$lib/search.js";
   import { loadRecentMap, recordRecent, saveRecentMap } from "$lib/recents.js";
+  import { normalizeTheme } from "$lib/themes";
   import type {
+    ThemeId,
     Group,
     WindowSize,
     Bookmark,
@@ -56,9 +59,11 @@
   let view = $state<"search" | "vault" | "settings">("search");
   let groups = $state<Group[]>([]), privateGroups = $state<Group[]>([]);
   let editingGroup = $state<Group|null>(null);
+  let previewTheme = $state<ThemeId | null>(null);
   let opacityPreview = $state<number|null>(null);
   let profileHints = $state<string[]>([]);
   let moving = $state(false);
+  let treeExpanded = $state<Record<string, boolean>>(loadExpansion());
   let editing = $state<Bookmark | null>(null);
   let bookmarks = $state<Bookmark[]>([]),
     privateBookmarks = $state<Bookmark[]>([]),
@@ -70,6 +75,7 @@
     { id: "edge", name: "Edge", color: "#83d6df", exe_path: "" },
   ]);
   let settings = $state<Settings>({
+    theme: "sage",
     window_size: {width:400,height:null},
     always_on_top: true,
     auto_hide: false,
@@ -115,6 +121,7 @@
   const all = $derived(
     view === "vault" ? privateBookmarks : [...bookmarks, ...privateBookmarks],
   );
+  const allTree = $derived(buildTree(all));
   const visibleGroups = $derived(view === "vault" ? privateGroups : [...groups, ...privateGroups]);
   const matched = $derived(searchBookmarks(all, query, visibleGroups));
   // Open-tab lookup is precomputed once per companion snapshot so row renders
@@ -127,9 +134,15 @@
   const baseSections = $derived(query.trim()
     ? [{ group: null, private: false, items: openMatched }]
     : groupSections(openMatched, visibleGroups));
-  const sections = $derived(baseSections.map((section) => ({ ...section, items: rankResults(section.items, openTabs, recentMap) })));
+  const sections = $derived(baseSections.map((section) => {
+    if (query.trim()) return {...section, items: rankResults(section.items, openTabs, recentMap)};
+    const roots = buildTree(section.items).roots;
+    const order = rankResults(roots.map(node=>node.item), openTabs, recentMap);
+    const byKey = new Map(roots.map(node=>[entryKey(node.item),node]));
+    return {...section, roots: order.map(item=>byKey.get(entryKey(item))!)};
+  }));
   const results = $derived(sections.flatMap((section) => section.items));
-  const keyboardResults = $derived(query.trim() ? results : sections.filter((section) => !section.group?.collapsed).flatMap((section) => section.items));
+  const keyboardResults = $derived(query.trim() ? results : sections.filter((section) => !section.group?.collapsed).flatMap((section) => visibleTree(section.roots ?? [], treeExpanded).map(node=>node.item)));
   const activeKey = $derived.by(() => {
     if (url && selected === 0) return null;
     const current = keyboardResults[selected - (url ? 1 : 0)];
@@ -222,6 +235,8 @@
 
   function clearPrivate(markLocked = true) {
     generation++;
+    treeExpanded = purgePrivateExpansion(treeExpanded);
+    saveExpansion(treeExpanded);
     privateBookmarks = [];
     privateGroups = [];
     editingGroup = null;
@@ -272,7 +287,7 @@
       bookmarks = data.bookmarks;
       groups = data.groups ?? [];
       browsers = data.browsers;
-      settings = { ...data.settings, auto_tab_groups: data.settings.auto_tab_groups ?? true, window_size:data.settings.window_size??{width:400,height:null}, hide_on_open: data.settings.hide_on_open ?? true, opacity: Math.max(0.3, Math.min(1, data.settings.opacity ?? 1)) };
+      settings = { ...data.settings, theme: normalizeTheme(data.settings.theme), auto_tab_groups: data.settings.auto_tab_groups ?? true, window_size:data.settings.window_size??{width:400,height:null}, hide_on_open: data.settings.hide_on_open ?? true, opacity: Math.max(0.3, Math.min(1, data.settings.opacity ?? 1)) };
       if (data.warnings?.length) error = data.warnings.join(" ");
     } catch (e) {
       if (mounted) error = String(e);
@@ -330,6 +345,7 @@
     if (native) await invoke("vault_lock");
   }
   async function open(bookmark?: Bookmark, force = false) {
+    if (force && bookmark && (allTree.index.get(entryKey(bookmark))?.count ?? 0) > 0) { await openSubtree(bookmark); return; }
     if (busy) return;
     if (!native) {
       error = "Open the desktop app to launch a browser.";
@@ -369,6 +385,32 @@
     } finally {
       if (current === generation) busy = false;
     }
+  }
+  function toggleTree(bookmark: Bookmark, expand?: boolean) {
+    const key = entryKey(bookmark);
+    const next = {...treeExpanded};
+    if (expand ?? !next[key]) next[key] = true; else delete next[key];
+    treeExpanded = next;
+    saveExpansion(next);
+    navTick++;
+  }
+  async function openSubtree(bookmark: Bookmark) {
+    if (busy) return;
+    if (!native) { error = "Open the desktop app to open bookmark subtrees."; return; }
+    const current = generation;
+    busy = true; error = "";
+    try {
+      const outcome = await invoke<{processed:number;note?:string}>("open_bookmark_tree", {id:bookmark.id,private:!!bookmark.private});
+      if (current !== generation) return;
+      notice = outcome.note ?? `Opened ${outcome.processed} tabs for ${bookmark.title}`;
+      query = ""; override = null;
+      if(settings.hide_on_open) {
+        await invoke("dock_hide");
+        if(current !== generation)return;
+        expanded = false; dockVisible = false;
+      }
+    } catch(e) {if(current===generation)error=String(e);}
+    finally {if(current===generation)busy=false;}
   }
   async function groupAction(group: Group, close = false) {
     if (busy) return;
@@ -463,6 +505,13 @@
     }
     if (editing || editingGroup || view === "settings" || (view === "vault" && vault.locked))
       return;
+    if (!query.trim() && (e.key === "ArrowRight" || e.key === "ArrowLeft")) {
+      const rowKey = (e.target as HTMLElement)?.closest?.('[data-vkey]')?.getAttribute('data-vkey');
+      const item = rowKey ? allTree.index.get(rowKey)?.item : keyboardResults[selected - (url ? 1 : 0)];
+      if(item && (allTree.index.get(entryKey(item))?.count ?? 0)>0) {
+        e.preventDefault(); toggleTree(item,e.key === "ArrowRight"); return;
+      }
+    }
     if (e.key === "ArrowDown" || e.key === "ArrowUp") {
       e.preventDefault();
       expanded = true;
@@ -532,6 +581,7 @@
     // Empty notice means everything — shortcuts included — is live already.
     const outcome = await invoke<{ notice: string }>("save_settings", { settings: value });
     settings = value;
+    previewTheme = null;
     opacityPreview = null;
     if (value.auto_hide) await invoke("dock_save_position", { snap: true });
     return outcome;
@@ -597,13 +647,15 @@
     editingGroup=(group.private?privateGroups:groups).find(g=>g.id===group.id)??null;
   }
 
-  async function move(id:string,groupId:string|null,index:number,privateScope:boolean){
+  async function move(id:string,groupId:string|null,index:number,privateScope:boolean,parentId?:string|null){
     if(moving)return;const current=generation;
     const before=privateScope?privateBookmarks:bookmarks;
     moving=true;
-    if(privateScope)privateBookmarks=moveBookmark(before,id,groupId,index);else bookmarks=moveBookmark(before,id,groupId,index);
-    try{await invoke("move_bookmark",{id,groupId,index,private:privateScope});}
-    catch(e){if(current===generation){if(privateScope)privateBookmarks=before;else bookmarks=before;error=String(e);}}
+    try {
+      const next=moveBookmark(before,id,groupId,index,parentId);
+      if(privateScope)privateBookmarks=next;else bookmarks=next;
+      await invoke("move_bookmark",{id,groupId,index,private:privateScope,...(parentId===undefined?{}:{parentId})});
+    } catch(e){if(current===generation){if(privateScope)privateBookmarks=before;else bookmarks=before;error=String(e);}}
     finally{moving=false;}
   }
   async function finishDrag(sequence = dragSequence) {
@@ -754,7 +806,7 @@
 
 <svelte:window onkeydown={keydown} onpointerdown={activity} />
 <!-- svelte-ignore a11y_no_static_element_interactions -->
-<main style:--dock-opacity={opacityPreview ?? settings.opacity} class:expanded class:strip onmouseenter={enter} onmouseleave={leave}>
+<main data-theme={previewTheme ?? settings.theme} style:--dock-opacity={opacityPreview ?? settings.opacity} class:expanded class:strip onmouseenter={enter} onmouseleave={leave}>
   {#if strip}<button
       class="wake-strip"
       onclick={() => summon()}
@@ -873,6 +925,7 @@
           {#if editingGroup}{#key editingGroup.id}<GroupEditor group={editingGroup} groups={(editingGroup.private?privateGroups:groups).toSorted((a,b)=>a.sort_order-b.sort_order||a.id.localeCompare(b.id))} onsave={saveGroup} ondelete={deleteGroup} oncancel={()=>editingGroup=null} onreorder={reorderGroup}/>{/key}
           {:else if editing}{#key editing.id}<BookmarkEditor
                 bookmark={editing}
+                bookmarks={editing.private?privateBookmarks:bookmarks}
                 groups={editing.private?privateGroups:groups}
                 profiles={profileHints}
                 onprofiles={(browserId)=>native?invoke<string[]>("browser_profiles",{browserId}):Promise.resolve([])}
@@ -894,6 +947,7 @@
               onbrowser={saveBrowser}
               onredetect={redetectBrowsers}
               onprofiles={(browserId)=>native?invoke<string[]>("browser_profiles",{browserId}):Promise.resolve([])}
+              onpreviewtheme={(value)=>previewTheme=value}
               onpreview={(value)=>opacityPreview=value}
               onsave={saveSettings}
               onsnap={() => invoke("dock_save_position", { snap: true })}
@@ -931,6 +985,10 @@
               >{/if}
             <BookmarkList
               sections={sections}
+              treeIndex={allTree.index}
+              {treeExpanded}
+              ontoggletree={toggleTree}
+              onopensubtree={openSubtree}
               activeKey={activeKey}
               navTick={navTick}
               groups={visibleGroups}
@@ -993,7 +1051,7 @@
           </div>
           <div class="keyboard-hints" aria-label="Keyboard shortcuts">
             <span><kbd>↑↓</kbd> select</span><span><kbd>Enter</kbd> open</span>
-            <span><kbd>Shift+↵</kbd> new tab</span><span><kbd>Esc</kbd> hide</span>
+            <span><kbd>Shift+↵</kbd> subtree / new tab</span><span><kbd>Esc</kbd> hide</span>
           </div>
         </footer>
       </div>
@@ -1007,7 +1065,7 @@
     position:relative;
     width: 100%;
     height: 100vh;
-    background: rgb(23 28 30 / calc(0.96 * var(--dock-opacity, 1)));
+    background: rgb(var(--surface-rgb) / calc(0.96 * var(--dock-opacity, 1)));
     transition: background-color 120ms ease;
     border: 1px solid #ffffff19;
     border-radius: 28px;
@@ -1133,7 +1191,7 @@
   }
   .open-filter:hover { color: var(--text); border-color: #ffffff14; }
   .open-filter-dot { width: 5px; height: 5px; border-radius: 50%; background: #62696d; }
-  .open-filter.on { color: var(--accent); border-color: #b8edc955; background: #b8edc914; font-weight: 600; }
+  .open-filter.on { color: var(--accent); border-color: var(--accent-alpha-33); background: var(--accent-alpha-12); font-weight: 600; }
   .open-filter.on .open-filter-dot { background: var(--accent); }
   .result-count { font-variant-numeric: tabular-nums; }
   footer {
@@ -1154,7 +1212,7 @@
   .keyboard-hints {display:flex;flex-wrap:wrap;gap:5px 12px;font-size:9px}
   .keyboard-hints > span {white-space:nowrap}
   kbd {font:9px "Cascadia Code",Consolas,monospace;color:#c9cfcc}
-  .override-clear {display:flex;align-items:center;gap:5px;background:#b8edc90b;border:1px solid #b8edc923;border-radius:5px;color:var(--accent);font-size:9px;padding:3px 5px}
+  .override-clear {display:flex;align-items:center;gap:5px;background:var(--accent-alpha-12);border:1px solid var(--accent-alpha-33);border-radius:5px;color:var(--accent);font-size:9px;padding:3px 5px}
   @media (max-width: 340px) {
     nav {padding:0 8px}
     .tabs {gap:10px}
@@ -1166,16 +1224,16 @@
     align-items: center;
     gap: 10px;
     padding: 12px 9px;
-    border: 1px solid #b8edc914;
+    border: 1px solid var(--accent-alpha-12);
     border-radius: 11px;
-    background: #b8edc906;
+    background: var(--accent-alpha-12);
     width: 100%;
     text-align: left;
     color: var(--accent);
     margin-bottom: 6px;
   }
   .url-result.active {
-    border-color: #b8edc94a;
+    border-color: var(--accent-alpha-33);
   }
   .url-result > span:first-of-type {
     display: grid;
@@ -1252,7 +1310,7 @@
     padding: 8px 10px;
     border: 1px solid #ffffff17;
     border-radius: 10px;
-    background: rgb(23 28 30 / 0.97);
+    background: rgb(var(--surface-rgb) / 0.97);
     box-shadow: 0 6px 20px rgb(0 0 0 / 0.45);
   }
   .toast p {

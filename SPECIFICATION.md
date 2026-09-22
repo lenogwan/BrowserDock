@@ -118,7 +118,7 @@ Location: `%APPDATA%/BrowserDock/config.json`
     "always_on_top": true,
     "global_shortcut": "Ctrl+Shift+Space",
     "panic_shortcut": "Ctrl+Alt+L",
-    "theme": "dark",
+    "theme": "sage",
     "dock_position": {
       "x": 100,
       "y": 100,
@@ -204,6 +204,7 @@ Location: `%APPDATA%/BrowserDock/config.json`
       ],
       "icon": "github",
       "group_id": "grp-work",
+      "parent_id": null,
       "sort_order": 0,
       "browser_options": {
         "profile": null,
@@ -226,7 +227,11 @@ Location: `%APPDATA%/BrowserDock/config.json`
 
 Configuration versions `1.0.0` and `1.1.0` are accepted. Loading `1.0.0` first writes a byte-for-byte `config.json.bak.<timestamp>` backup, then saves version `1.1.0` with groups and bookmark order defaults. Unknown fields and unreadable bookmark entries remain on disk; unreadable entries produce a dock warning. Missing `hide_on_open` defaults to `true`; missing opacity defaults to `1.0`, and hand-edited values clamp to `0.3–1.0`. Settings saves reject out-of-range opacity.
 
-Groups are scoped to public or private bookmarks. Each scope allows at most 50 groups, names of 1–64 characters, optional hex colors, stable order and a collapsed flag. Missing/null `group_id` means Ungrouped, rendered last. Bookmark ordering uses `sort_order`, title, then ID. Deleting a group moves bookmarks to Ungrouped. Private groups and launch options are stored only in the vault.
+Groups are scoped to public or private bookmarks. Each scope allows at most 50 groups, names of 1–64 characters, optional hex colors, stable order and a collapsed flag. Missing/null `group_id` means Ungrouped, rendered last. Bookmark ordering uses `sort_order`, title, then ID within each `(group_id, parent_id)` sibling set, renormalized from zero. Deleting a group moves bookmarks to Ungrouped. Private groups and launch options are stored only in the vault.
+
+Optional `parent_id` is a nonempty ID of at most 128 bytes; absent/null means root. Trees allow root → child → grandchild. Parents must exist in the same public/vault scope; self-links, cycles and deeper trees are rejected. Saving/moving a child copies its parent's group; moving a parent between groups also updates its descendants. Deleting a bookmark preserves its children, appending them in sibling order under its former parent (or at root) in the same atomic write. Invalid parent links in hand-edited public config render as roots with a dock warning, without rewriting the stored data on read. Organization patches preserve unknown public fields and unreadable entries. Existing config/vault versions and the encrypted binary layout are unchanged.
+
+`settings.theme` accepts `sage` (default), `nord`, `amber`, `tokyo`, or `rose`. Missing, legacy `dark`, and unknown values load as `sage`; settings saves reject unsupported IDs. Saving settings persists the normalized choice without a schema-version migration.
 
 Browser defaults support `profile` for Chrome/Edge, `container` for Firefox/Mullvad, and `extra_args`. Bookmarks and routing rules may carry `browser_options: {profile?, container?, incognito?}`. Bookmark options take precedence over defaults; typed URLs use matching rule options before browser defaults. Empty profile/container values inherit defaults. Explicit browser overrides bypass routing rules. Names allow 1–128 ASCII letters, digits, spaces, underscores, dots and hyphens; `.` and `..` are invalid. Extra arguments allow at most 20 entries of 256 characters and reject shell metacharacters/control characters. Process arguments are always separate argv entries with the URL last.
 
@@ -317,7 +322,7 @@ Both distributions request `tabGroups`; grouping is feature-detected so unavaila
 - `OPEN_GROUP` uses `{id,action,urls,tab_group,container?,profile?,deadline_ms}`. The same envelope with `action:"CLOSE_GROUP"` omits URLs. Requests have at most 50 bookmarks and a 16 KB frame limit. Desktop preflight reserves framing space by limiting each serialized URL array to 14 KB. Browser/profile/container/incognito differences split dock groups into separate batches, each sent to one connected instance.
 - Open chooses one eligible normal window (focused, recently focused, then first), reuses exact URLs within it, creates missing tabs, and groups them with one `tabs.group` call. Same-title groups are reused within that window only when their members share the tab's cookie store. Shared groups are excluded from title-based reuse and closing. Browser group IDs are ephemeral and never persisted. Dock groups with the same name can intentionally resolve to the same browser group; renaming a dock group does not rename existing browser groups.
 - Close selects one instance per resolved browser/options batch, preferring matching title/container inventory, and removes all tabs with that exact native group title across its eligible windows, filtered by the requested container and private-tab opt-in. This includes manually added group tabs. It never falls back to URL/hostname closing or process launch. Missing native groups return `ERROR_TAB_NOT_FOUND`; unsupported grouping returns an error.
-- Open replies use `SUCCESS/OPENED_GROUP` with `window_id`, `tab_id`, and optional bounded `note`; close reuses `SUCCESS/CLOSED_TABS` with `closed`. Unsupported/disabled grouping leaves opened tabs in place and reports a note. Browser batches are **not atomic**: deadlines, disconnects, or API failures may leave partial work, which is reported without replay or process fallback. A missing companion before dispatch may open ordinary tabs; incognito options always use process launch and are not group-closeable.
+- Open replies use `SUCCESS/OPENED_GROUP` with `window_id`, `tab_id`, and optional bounded `note`; close reuses `SUCCESS/CLOSED_TABS` with `closed`. Unsupported/disabled grouping leaves opened tabs in place and reports a note. If grouping is unavailable or fails, batch open activates the first opened/reused tab even when the dock group is collapsed; successful collapsed groups do not activate a member. Browser batches are **not atomic**: deadlines, disconnects, or API failures may leave partial work, which is reported without replay or process fallback. A missing companion before dispatch may open ordinary tabs; incognito options always use process launch and are not group-closeable.
 - `CANCEL_REQUEST {id}` is connection-local and stops subsequent mutations in a pending command. Desktop private group requests monitor the vault session and send cancellation when it becomes invalid. Already-issued browser API operations cannot be undone. Private group hints and batch URLs remain in memory only and are zeroized when released; locking clears private frontend groups and ignores stale outcomes.
 - Inventory adds optional `groupId`, `groupTitle` (≤64 characters), `groupColor` (one of the nine enum names), and `groupCollapsed`. These fields work with legacy and paged snapshots. The compact desktop digest retains title/color and distinguishes same-host tabs in different groups. Group events and tab `groupId` changes trigger the existing debounced snapshot pipeline. Group inventory is queried once per snapshot; failed group queries still allow plain tab inventory.
 
@@ -331,10 +336,11 @@ Existing command names remain available. Tauri JavaScript arguments use camelCas
 
 - `get_dock_data` includes public `groups`, `bookmarks`, `browsers`, public `settings`, and warnings; pairing secrets are excluded.
 - `vault_list` returns `{bookmarks, groups}`. The frontend also accepts the legacy bookmark-array response. Locked or cancelled sessions cannot read/mutate private data.
-- `save_group {group, private}`, `delete_group {id, private}`, and `move_bookmark {id, groupId, index, private}` persist within one scope. Index is clamped and order is renormalized.
+- `save_group {group, private}`, `delete_group {id, private}`, and `move_bookmark {id, groupId, index, private, parentId?}` persist within one scope. Omitted `parentId` preserves the parent, `null` moves to root, and a string nests under that parent and inherits its group. Index is clamped within the destination sibling set and order is renormalized; failed validation/writes do not commit partial changes.
 - `save_browser {browser}` updates an existing browser's executable, compatibility args, profile/container defaults and advanced extra arguments. All launch commands read current settings immediately.
 - `open_url {url, browserId?, forceNewTab?, bookmarkId?, bookmarkPrivate?}` resolves a stored bookmark's URL/options when supplied. `bookmarkPrivate` disambiguates IDs shared between scopes; omission searches public then unlocked vault. Result adds optional `note` for container fallback.
 - `open_group {groupId, private, browserId?}` and `close_group_tabs {groupId, private}` resolve the stored group and bookmarks within one public/vault scope. Results are `{processed, note?}`. Group opens respect bookmark options and the optional browser override; close respects each stored target. Private commands require a valid unlocked session.
+- `open_bookmark_tree {id, private}` resolves one stored subtree in depth-first order, parent first and siblings by stored order/title/ID. It allows at most 50 URLs including the parent; exceeding this returns `A bookmark subtree can open at most 50 URLs including its parent` before dispatch. The group hint uses the parent's trimmed title (first 64 characters), optional group color and no collapsed hint. It reuses the guarded group dispatcher and `{processed, note?}` result, including per-option batching, the 14 KB URL-array guard, private-session cancellation, incognito process launches and no retry after ambiguous dispatch. Opening requests browser foregrounding; there is no separate subtree-close command.
 - `close_tab {url, browserId?, exactMatch?, bookmarkId?, bookmarkPrivate?}` closes open tabs via the companion using the same bookmark resolution. Result is `{browser_id, result: CLOSED_TABS | TAB_NOT_FOUND, closed, note?}`. No companion, or no matching tab, is reported — never launched.
 - `route_url` still returns the browser ID. `route_details {url, browserId?, bookmarkId?, bookmarkPrivate?}` returns `{browser_id, profile, container, incognito}`.
 - `browser_profiles {browserId}` returns best-effort Chromium profile directories from Local State or connected Gecko container names; unavailable discovery yields an empty list.
@@ -352,7 +358,8 @@ Existing command names remain available. Tauri JavaScript arguments use camelCas
 * **Keyboard Navigation:**
   * `Down Arrow` / `Up Arrow`: Navigate search results.
   * `Enter`: Open / focus with default or rule-based browser.
-  * `Shift + Enter`: Force open new tab instead of focusing existing.
+  * `Shift + Enter`: Open a parent's entire subtree; for a leaf or typed URL, force a new tab.
+  * `Right Arrow` / `Left Arrow`: Expand/collapse the focused or selected parent in the grouped view.
   * `Alt + F`: Route to Firefox.
   * `Alt + M`: Route to Mullvad.
   * `Alt + C`: Route to Chrome.
@@ -366,9 +373,13 @@ Existing command names remain available. Tauri JavaScript arguments use camelCas
 
 Settings provides a 30–100% background-opacity slider in 5% steps, with an unsaved live preview. Save persists it; cancel discards the preview. Text and borders keep their opacity, and reduced-motion users see instant changes.
 
+Settings → Appearance offers Sage Mint, Nord Frost, Midnight Amber, Tokyo Violet and Rosé Pine through keyboard-accessible radio cards. Theme selection previews immediately throughout the dock; Save persists it, and Discard or leaving after discarding restores the committed theme. CSS tokens control surfaces, text and accents without remote assets or runtime dependencies. Token contrast is checked against opaque base surfaces; arbitrary desktop backgrounds at reduced opacity require visual acceptance.
+
 The main dock window is resizable. `window_size.width` is clamped to 280–800 px (default 400); `window_size.height` is `null` for automatic content height or a manual value when explicitly resized/configured. Manual height applies to expanded panels only: Collapse always shrinks the native window to the 56px pill, and expanding restores the saved manual height. Startup also uses the pill height. The 6px auto-hide strip takes precedence over both modes. Size changes are applied live and persisted on commit, while cancel restores the last committed size. The resize grip is hidden in strip mode, and resizing preserves the snapped screen edge.
 
-An empty query displays collapsible group sections; search displays flat results with group badges and includes group names at low fuzzy weight. Drag bookmark rows onto group headers or insertion lines to move/reorder within the same scope; a failed write restores the prior order. BookmarkEditor also offers a Group select for touch and keyboard users. GroupEditor supports rename, color, deletion confirmation and up/down ordering; group-header dragging is not implemented. Locking unmounts private rows, groups and editors.
+An empty query displays collapsible group sections and bookmark trees; search displays flat results with group/parent badges and includes group names at low fuzzy weight. Root ranking preserves attached descendants, and keyboard navigation skips collapsed branches. Parents have a 28px chevron and an always-visible `+N` descendant-count button that opens the subtree. Normal click/Enter opens only that bookmark. Indentation preserves the 52px row estimate and existing row actions.
+
+Drag existing bookmark rows onto a row's top insertion edge to reorder siblings, or hover its body for 250ms to nest as its last child. Group-header drops move to the root end. Same-scope and depth/cycle rules apply; Escape cancels dragging, and failed writes restore the prior order. BookmarkEditor offers a Parent select with valid candidates and breadcrumbs; selecting a parent locks Group to its group. New bookmarks start at root. Expansion defaults to collapsed and stores only expanded entry IDs/booleans in `browserdock:tree-expanded:v1`; private keys are purged whenever private rows are cleared, including Escape and vault lock. Startup does not restore private expansion. GroupEditor supports rename, color, deletion confirmation and up/down ordering; group-header dragging is not implemented. Locking unmounts private rows, groups and editors and ignores stale private outcomes.
 
 BookmarkEditor offers contextual profile/container inputs and a private/incognito toggle. Advanced browser settings include default options and extra arguments. Resolved target labels include the profile or container. Container fallback notes remain visible even when the default post-open hide behavior is enabled, and appear on the next summon.
 

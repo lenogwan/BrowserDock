@@ -1,7 +1,7 @@
 //! Desktop IPC and vault lifecycle. No pairing token is returned to the webview.
 use browserdock_launcher::{
     config::Config,
-    groups::Group,
+    groups::{self, Group},
     vault::{Bookmark, Vault, VaultStatus},
 };
 use serde::Serialize;
@@ -38,7 +38,7 @@ pub async fn get_dock_data(state: tauri::State<'_, DesktopState>) -> Result<Dock
         .lock()
         .map_err(|_| "Configuration unavailable")?;
     let mut invalid_public = 0usize;
-    let bookmarks = c
+    let mut bookmarks: Vec<Bookmark> = c
         .bookmarks
         .iter()
         .filter_map(
@@ -63,6 +63,10 @@ pub async fn get_dock_data(state: tauri::State<'_, DesktopState>) -> Result<Dock
         warnings.push(format!(
             "{invalid_public} public bookmark(s) could not be read and were hidden."
         ));
+    }
+    let orphaned = groups::display_roots(&mut bookmarks);
+    if orphaned > 0 {
+        warnings.push(format!("{orphaned} public bookmark(s) have invalid parents and are shown at the root. Repair their Parent field."));
     }
     Ok(DockData {
         warnings,
@@ -168,15 +172,21 @@ pub struct VaultData {
 }
 #[tauri::command]
 pub async fn vault_list(app: tauri::AppHandle) -> Result<VaultData, String> {
-    let state = app.try_state::<DesktopState>().ok_or("Configuration unavailable")?;
+    let state = app
+        .try_state::<DesktopState>()
+        .ok_or("Configuration unavailable")?;
     let epoch = state.gate.ticket().ok_or("Vault is locked")?;
     let mut vault = state.vault.lock().map_err(|_| "Vault unavailable")?;
     let now = Instant::now();
     let result = (|| {
-        if !state.gate.valid(epoch) { return Err("Vault is locked".into()); }
+        if !state.gate.valid(epoch) {
+            return Err("Vault is locked".into());
+        }
         let bookmarks = vault.list(now)?;
         let groups = vault.groups(now)?;
-        if !state.gate.valid(epoch) { return Err("Vault is locked".into()); }
+        if !state.gate.valid(epoch) {
+            return Err("Vault is locked".into());
+        }
         Ok(VaultData { bookmarks, groups })
     })();
     notify_lock(&app, &state, &mut vault);
@@ -219,12 +229,18 @@ pub async fn save_bookmark(
             notify_lock(&app, &state, &mut vault);
             return result;
         }
-        if let Some(id) = &bookmark.group_id {
-            if !config.groups.iter().any(|g| &g.id == id) {
-                return Err("Choose an existing group".into());
-            }
-        }
         let mut next = config.clone();
+        let mut bookmarks: Vec<Bookmark> = next
+            .bookmarks
+            .iter()
+            .filter_map(|v| serde_json::from_value(v.clone()).ok())
+            .collect();
+        let id = bookmark.id.clone();
+        groups::save_bookmark(&mut bookmarks, &next.groups, bookmark)?;
+        let bookmark = bookmarks
+            .iter()
+            .find(|b| b.id == id)
+            .ok_or("Bookmark no longer exists")?;
         let value = serde_json::to_value(&bookmark).map_err(|_| "Cannot save bookmark")?;
         if let Some(existing) = next
             .bookmarks
@@ -243,6 +259,7 @@ pub async fn save_bookmark(
             }
             next.bookmarks.push(value);
         }
+        groups::patch_organization(&mut next.bookmarks, &bookmarks);
         next.save(&state.path)?;
         *config = next;
         Ok(())
@@ -279,6 +296,13 @@ pub async fn delete_bookmark(
             .lock()
             .map_err(|_| "Configuration unavailable")?;
         let mut next = c.clone();
+        let mut bookmarks: Vec<Bookmark> = next
+            .bookmarks
+            .iter()
+            .filter_map(|v| serde_json::from_value(v.clone()).ok())
+            .collect();
+        groups::delete_bookmark(&mut bookmarks, &id)?;
+        groups::patch_organization(&mut next.bookmarks, &bookmarks);
         next.bookmarks
             .retain(|b| b.get("id").and_then(|v| v.as_str()) != Some(id.as_str()));
         next.save(&state.path)?;
@@ -289,7 +313,10 @@ pub async fn delete_bookmark(
     .map_err(|_| "Bookmark task failed")?
 }
 #[tauri::command]
-pub async fn save_settings(app: tauri::AppHandle, mut settings: Settings) -> Result<SaveSettingsOutcome, String> {
+pub async fn save_settings(
+    app: tauri::AppHandle,
+    mut settings: Settings,
+) -> Result<SaveSettingsOutcome, String> {
     settings.validate()?;
     let state = app
         .try_state::<DesktopState>()
@@ -332,19 +359,25 @@ pub async fn save_settings(app: tauri::AppHandle, mut settings: Settings) -> Res
         next.settings.insert(key.clone(), value.clone());
     }
     // Save position and size together, including shifts caused by edge anchoring.
-    let position = window.outer_position().map_err(|_| "Cannot read dock position")?;
-    let mut saved_position = next.settings.get("dock_position").filter(|v|v.is_object()).cloned()
-        .unwrap_or_else(||serde_json::json!({"snapped":false}));
-    saved_position["x"]=serde_json::json!(position.x);
-    saved_position["y"]=serde_json::json!(position.y);
-    next.settings.insert("dock_position".into(),saved_position);
+    let position = window
+        .outer_position()
+        .map_err(|_| "Cannot read dock position")?;
+    let mut saved_position = next
+        .settings
+        .get("dock_position")
+        .filter(|v| v.is_object())
+        .cloned()
+        .unwrap_or_else(|| serde_json::json!({"snapped":false}));
+    saved_position["x"] = serde_json::json!(position.x);
+    saved_position["y"] = serde_json::json!(position.y);
+    next.settings.insert("dock_position".into(), saved_position);
     if window.set_always_on_top(settings.always_on_top).is_err() {
-        let _ = crate::window_sizing::apply(&window,&config,&mut size,previous_size,None);
+        let _ = crate::window_sizing::apply(&window, &config, &mut size, previous_size, None);
         return Err("Cannot update window".into());
     }
     if let Err(error) = next.save(&state.path) {
         let _ = window.set_always_on_top(old.always_on_top);
-        let _ = crate::window_sizing::apply(&window,&config,&mut size,previous_size,None);
+        let _ = crate::window_sizing::apply(&window, &config, &mut size, previous_size, None);
         return Err(error);
     }
     *config = next;
@@ -395,8 +428,12 @@ fn hot_swap_shortcuts(app: &tauri::AppHandle, old: &Settings, new: &Settings) ->
     if old.global_shortcut == new.global_shortcut && old.panic_shortcut == new.panic_shortcut {
         return String::new();
     }
-    let _ = app.global_shortcut().unregister(old.global_shortcut.as_str());
-    let _ = app.global_shortcut().unregister(old.panic_shortcut.as_str());
+    let _ = app
+        .global_shortcut()
+        .unregister(old.global_shortcut.as_str());
+    let _ = app
+        .global_shortcut()
+        .unregister(old.panic_shortcut.as_str());
     let mut problems = vec![];
     if register_summon(app, &new.global_shortcut).is_err() {
         if register_summon(app, &old.global_shortcut).is_ok() {
@@ -423,7 +460,9 @@ pub fn initialize(app: &tauri::AppHandle, config: Config, path: PathBuf) {
         .map(|warning| vec![warning.to_string()])
         .unwrap_or_default();
     app.manage(DesktopState {
-        size: Mutex::new(browserdock_launcher::window_size::SizeState::new(Settings::from_config(&config).window_size)),
+        size: Mutex::new(browserdock_launcher::window_size::SizeState::new(
+            Settings::from_config(&config).window_size,
+        )),
         config: Mutex::new(config),
         vault: Mutex::new(Vault::new(
             path.with_file_name("vault.enc"),

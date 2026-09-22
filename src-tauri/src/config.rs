@@ -67,7 +67,7 @@ impl Default for Config {
         settings.insert("always_on_top".into(), json!(true));
         settings.insert("global_shortcut".into(), json!("Ctrl+Shift+Space"));
         settings.insert("panic_shortcut".into(), json!("Ctrl+Alt+L"));
-        settings.insert("theme".into(), json!("dark"));
+        settings.insert("theme".into(), json!("sage"));
         settings.insert(
             "dock_position".into(),
             json!({"x":100,"y":100,"snapped":false}),

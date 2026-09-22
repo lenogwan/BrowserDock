@@ -3,7 +3,8 @@
   import BrowserPanel from "./BrowserPanel.svelte";
   import CompanionSetup from "./CompanionSetup.svelte";
   import ShortcutRecorder from "./ShortcutRecorder.svelte";
-  import type { Settings, Browser, WindowSize, InstanceDigest } from "./types";
+  import { THEMES } from "./themes";
+  import type { ThemeId, Settings, Browser, WindowSize, InstanceDigest } from "./types";
 
   type Tab = "appearance" | "behavior" | "browsers" | "companion";
   const TABS: { id: Tab; label: string }[] = [
@@ -28,6 +29,7 @@
     onredetect,
     onprofiles,
     onpreview,
+    onpreviewtheme,
     onsizepreview,
     onsizecancel,
   }: {
@@ -43,6 +45,7 @@
     onbrowser: (browser: Browser) => Promise<void>;
     onredetect: () => Promise<void>;
     onprofiles: (browserId: string) => Promise<string[]>;
+    onpreviewtheme: (theme: ThemeId | null) => void;
     onpreview: (opacity: number | null) => void;
     onsizepreview: (size: WindowSize) => Promise<void>;
     onsizecancel: () => Promise<void>;
@@ -90,6 +93,7 @@
 
   onDestroy(() => {
     onpreview(null);
+    onpreviewtheme(null);
     void onsizecancel().catch(() => {});
   });
 
@@ -111,6 +115,7 @@
     }
     form = { ...saved, window_size: { ...saved.window_size } };
     onpreview(null);
+    onpreviewtheme(null);
     void onsizecancel().catch(() => {});
     error = "";
     message = "";
@@ -166,6 +171,21 @@
 
   {#if tab === "appearance"}
     <div class="tab-body" role="tabpanel" id="settings-panel" aria-labelledby={`settings-tab-${tab}`} tabindex="0">
+      <fieldset class="theme-section">
+        <legend>Theme</legend>
+        <div class="theme-grid">
+          {#each THEMES as theme}
+            <label class="theme-card" class:selected={form.theme === theme.id} title={theme.description}>
+              <input type="radio" name="theme" value={theme.id} bind:group={form.theme} disabled={busy}
+                onchange={() => onpreviewtheme(theme.id)} />
+              <span class="theme-swatch" style:background={theme.surface} style:border-color={theme.accent}>
+                <span style:background={theme.accent}></span>
+              </span>
+              <span>{theme.label}</span>
+            </label>
+          {/each}
+        </div>
+      </fieldset>
       <label
         >Background opacity · {Math.round(form.opacity * 100)}%<input
           type="range"
@@ -288,6 +308,16 @@
 </div>
 
 <style>
+  .theme-section {min-width:0;border:0;padding:0;margin:0;}
+  .theme-section legend {font-size:11px;color:var(--text);margin-bottom:7px;}
+  .theme-grid {display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:6px;}
+  .theme-card {position:relative;display:flex;align-items:center;gap:8px;padding:8px;border:1px solid #ffffff17;border-radius:8px;cursor:pointer;font-size:10px;}
+  .theme-card.selected {border-color:var(--accent);background:var(--accent-alpha-12);}
+  .theme-card:focus-within {outline:2px solid var(--accent);outline-offset:2px;}
+  .theme-card input {position:absolute;opacity:0;width:1px;height:1px;}
+  .theme-swatch {width:25px;height:25px;border:1px solid;border-radius:6px;display:grid;place-items:center;flex-shrink:0;}
+  .theme-swatch span {width:10px;height:10px;border-radius:50%;}
+
   .settings-view {
     display: grid;
     gap: 12px;
@@ -401,9 +431,9 @@
     padding: 6px 0;
   }
   .chip.on {
-    border-color: #b8edc955;
+    border-color: var(--accent-alpha-33);
     color: var(--accent);
-    background: #b8edc90e;
+    background: var(--accent-alpha-12);
   }
   .field-row {
     display: flex;
@@ -431,8 +461,8 @@
     align-items: center;
     justify-content: space-between;
     gap: 8px;
-    background: rgb(23 28 30 / 0.97);
-    border: 1px solid #b8edc955;
+    background: rgb(var(--surface-rgb) / 0.97);
+    border: 1px solid var(--accent-alpha-33);
     border-radius: 10px;
     padding: 8px 8px 8px 12px;
     font-size: 11px;

@@ -1,4 +1,5 @@
-/** @typedef {{group: import('./types').Group | null; private: boolean; items: import('./types').Bookmark[]}} Section */
+import { buildTree, siblingOrder, validateTree } from "./trees.js";
+/** @typedef {{group: import('./types').Group | null; private: boolean; items: import('./types').Bookmark[], roots?: import('./trees.js').TreeNode[]}} Section */
 const sectionsCache = /** @type {WeakMap<object, WeakMap<object, Section[]>>} */ (new WeakMap());
 /** @param {import('./types').Bookmark[]} items @param {import('./types').Group[]} groups @returns {Section[]} */
 export function groupSections(items, groups) {
@@ -50,22 +51,35 @@ function buildSections(items, groups) {
       ),
     ),
   }));
-  return [...groupSections, ...ungrouped];
+  return [...groupSections, ...ungrouped].map(section=>({...section, roots: buildTree(section.items).roots}));
 }
-/** Immutable draft: callers retain the original array for failed persistence rollback.
- * Identity note: `target` holds references into `draft` (plus one fresh copy
- * of the moved item), so the `includes` checks below are intentional
- * reference comparisons, not value comparisons.
- * @param {import('./types').Bookmark[]} items @param {string} id @param {string|null} groupId @param {number} index */
-export function moveBookmark(items,id,groupId,index) {
+/** Immutable draft: the caller retains the original for persistence rollback.
+ * @param {import('./types').Bookmark[]} items @param {string} id @param {string|null} groupId @param {number} index @param {string|null|undefined} [parentId] */
+export function moveBookmark(items,id,groupId,index,parentId) {
  const item=items.find(b=>b.id===id); if(!item)return items;
- const draft=items.filter(b=>b.id!==id).map(b=>({...b}));
- const target=draft.filter(b=>(b.group_id??null)===groupId).sort((a,b)=>(a.sort_order??0)-(b.sort_order??0)||a.title.localeCompare(b.title)||a.id.localeCompare(b.id));
- target.splice(Math.max(0,Math.min(index,target.length)),0,{...item,group_id:groupId});
- target.forEach((b,i)=>b.sort_order=i);
- const source=draft.filter(b=>(b.group_id??null)===(item.group_id??null)&&!target.includes(b)).sort((a,b)=>(a.sort_order??0)-(b.sort_order??0));
- source.forEach((b,i)=>b.sort_order=i);
- return [...draft.filter(b=>!target.includes(b)),...target];
+ const draft=items.map(b=>({...b}));
+ const moved=draft.find(b=>b.id===id && !!b.private===!!item.private);
+ if(!moved)return items;
+ if(parentId!==undefined)moved.parent_id=parentId;
+ moved.group_id=groupId;
+ if(moved.parent_id) {
+   const parent=draft.find(b=>b.id===moved.parent_id && !!b.private===!!moved.private);
+   if(!parent)throw Error('Choose a parent in the same bookmark scope');
+   moved.group_id=parent.group_id??null;
+ }
+ const pending=[moved],seen=new Set();
+ while(pending.length) {
+   const parent=pending.pop(); if(!parent||seen.has(parent.id))continue;seen.add(parent.id);
+   for(const child of draft.filter(b=>b.parent_id===parent.id && !!b.private===!!parent.private)) {child.group_id=parent.group_id;pending.push(child);}
+ }
+ validateTree(draft);
+ const siblings=draft.filter(b=>b!==moved && !!b.private===!!moved.private && (b.group_id??null)===(moved.group_id??null) && (b.parent_id??null)===(moved.parent_id??null)).sort(siblingOrder);
+ siblings.splice(Math.max(0,Math.min(index,siblings.length)),0,moved);
+ siblings.forEach((b,i)=>b.sort_order=i);
+ const partitions=new Map();
+ for(const b of draft) {const key=JSON.stringify([!!b.private,b.group_id??null,b.parent_id??null]);if(!partitions.has(key))partitions.set(key,[]);partitions.get(key).push(b);}
+ for(const partition of partitions.values())partition.sort(siblingOrder).forEach((/** @type {import('./types').Bookmark} */ b,/** @type {number} */ i)=>b.sort_order=i);
+ return draft;
 }
 /** @param {import('./types').Bookmark} item @param {import('./types').Browser[]} browsers */
 export function targetLabel(item,browsers) {

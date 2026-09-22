@@ -112,7 +112,9 @@ Full details, private-tab opt-in, and limits: [`extension/README.md`](extension/
 | :--- | :--- |
 | Summon / hide | `Ctrl+Shift+Space` / `Esc` |
 | Open with specific browser | `Alt+F` Firefox · `Alt+M` Mullvad · `Alt+C` Chrome · `Alt+E` Edge (or `Alt+1–4`) |
-| Force new tab | `Shift+Enter` |
+| Open entire bookmark subtree | Parent row's `+N` button or `Shift+Enter` |
+| Force new tab for a leaf bookmark or typed URL | `Shift+Enter` |
+| Expand / collapse a bookmark parent | Chevron or `Right Arrow` / `Left Arrow` |
 | Panic lock vault | `Esc` twice quickly, or `Ctrl+Alt+L` |
 | Vault | Click the lock icon or type `/vault` (min 8-char passphrase, numeric-only rejected) |
 
@@ -124,10 +126,15 @@ Full details, private-tab opt-in, and limits: [`extension/README.md`](extension/
 | Hide after opening link | Hides after a successful launch; turn off to keep the dock visible | On |
 | Auto-hide | Collapses to a strip when idle and the pointer leaves | Off |
 | Interface opacity | Background transparency, 30–100%; text remains solid | 100% |
+| Theme | Sage Mint, Nord Frost, Midnight Amber, Tokyo Violet or Rosé Pine | Sage Mint |
 
-Settings previews opacity until Save; Cancel restores the saved appearance. The three visibility settings are independent.
+Settings → Appearance previews theme and opacity until Save; Discard restores the saved appearance. The three visibility settings are independent.
 
 Create groups using **Add group**, move bookmarks by dragging or the editor's Group select, and use group editing controls to rename, reorder, or delete. Deleting a group keeps its bookmarks under Ungrouped. Search includes group names. Private groups are available only while the vault is unlocked.
+
+Nest bookmarks using the editor's **Parent** select or by holding a dragged row over another row's body briefly. Trees support children and grandchildren; the group follows the parent. Drop on a row's top edge to reorder siblings, or on a group header to return to root. Choose **Parent → None** to unnest using the keyboard or touch. Escape cancels dragging. Deleting a parent keeps its children under its former parent, or at root.
+
+Click a parent normally to open only its URL. Its **+N** button or **Shift+Enter** opens it and all descendants, up to 50 URLs, in a browser group named after the parent. Browser/profile/container differences split batches just as for group actions. Expansion is remembered, and private expansion is cleared when private rows are hidden or locked. Search stays flat and shows parent names.
 
 Grouped bookmarks automatically join a matching native browser tab group. Turn this off under **Settings → Behavior → Sync bookmark groups to browser tab groups**. Group headers offer **Open group in browser** and **Close group tabs**; rows display native group names/colors when reported by the companion. Explicit group opening works with the automatic setting off.
 

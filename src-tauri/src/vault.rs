@@ -27,6 +27,8 @@ pub struct Bookmark {
     #[serde(default)]
     pub group_id: Option<String>,
     #[serde(default)]
+    pub parent_id: Option<String>,
+    #[serde(default)]
     pub sort_order: u32,
     #[serde(default)]
     pub browser_options: Option<BrowserOptions>,
@@ -43,6 +45,7 @@ impl Drop for Bookmark {
         self.tags.zeroize();
         self.icon.zeroize();
         self.group_id.zeroize();
+        self.parent_id.zeroize();
     }
 }
 impl Bookmark {
@@ -69,6 +72,13 @@ impl Bookmark {
             .is_some_and(|id| id.is_empty() || id.len() > 128)
         {
             return Err("Invalid group ID".into());
+        }
+        if self
+            .parent_id
+            .as_ref()
+            .is_some_and(|id| id.is_empty() || id.len() > 128)
+        {
+            return Err("Invalid parent ID".into());
         }
         parse_url(&self.url).map_err(|_| "Bookmark needs a valid HTTP(S) URL")?;
         Ok(())
@@ -264,13 +274,8 @@ impl Vault {
         self.expire(now);
         bookmark.validate()?;
         let state = self.unlocked.as_ref().ok_or("Vault is locked")?;
-        groups::validate_target(&state.groups, bookmark.group_id.as_deref())?;
         let mut bookmarks = state.bookmarks.clone();
-        if let Some(existing) = bookmarks.iter_mut().find(|b| b.id == bookmark.id) {
-            *existing = bookmark;
-        } else {
-            bookmarks.push(bookmark);
-        }
+        groups::save_bookmark(&mut bookmarks, &state.groups, bookmark)?;
         let groups = self
             .unlocked
             .as_ref()
@@ -287,7 +292,7 @@ impl Vault {
             .ok_or("Vault is locked")?
             .bookmarks
             .clone();
-        bookmarks.retain(|b| b.id != id);
+        groups::delete_bookmark(&mut bookmarks, id)?;
         let groups = self
             .unlocked
             .as_ref()
@@ -324,6 +329,7 @@ impl Vault {
         &mut self,
         id: &str,
         group_id: Option<String>,
+        parent_id: Option<Option<String>>,
         index: u32,
         now: Instant,
     ) -> Result<(), String> {
@@ -331,7 +337,7 @@ impl Vault {
         let state = self.unlocked.as_ref().ok_or("Vault is locked")?;
         let groups = state.groups.clone();
         let mut bookmarks = state.bookmarks.clone();
-        groups::move_bookmark(&mut bookmarks, &groups, id, group_id, index)?;
+        groups::move_bookmark(&mut bookmarks, &groups, id, group_id, parent_id, index)?;
         self.persist(bookmarks, groups, now)
     }
     fn persist(
@@ -377,6 +383,7 @@ fn validate_bookmarks(bookmarks: &[Bookmark]) -> Result<(), String> {
     if bookmarks.len() > 1000 {
         return Err("At most 1000 private bookmarks are supported".into());
     }
+    groups::validate_tree(bookmarks)?;
     let mut ids = std::collections::HashSet::new();
     for bookmark in bookmarks {
         bookmark.validate()?;

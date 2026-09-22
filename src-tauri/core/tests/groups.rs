@@ -19,13 +19,19 @@ fn group_moves_renumber_and_delete_preserves_bookmarks() {
     let mut groups = vec![];
     groups::save_group(&mut groups, group("work", 0)).unwrap();
     let mut bookmarks = vec![bookmark("a"), bookmark("b"), bookmark("c")];
-    groups::move_bookmark(&mut bookmarks, &groups, "b", Some("work".into()), 99).unwrap();
-    groups::move_bookmark(&mut bookmarks, &groups, "c", Some("work".into()), 0).unwrap();
+    groups::move_bookmark(&mut bookmarks, &groups, "b", Some("work".into()), None, 99).unwrap();
+    groups::move_bookmark(&mut bookmarks, &groups, "c", Some("work".into()), None, 0).unwrap();
     assert_eq!(bookmarks[1].sort_order, 1);
     assert_eq!(bookmarks[2].sort_order, 0);
-    assert!(
-        groups::move_bookmark(&mut bookmarks, &groups, "a", Some("missing".into()), 0).is_err()
-    );
+    assert!(groups::move_bookmark(
+        &mut bookmarks,
+        &groups,
+        "a",
+        Some("missing".into()),
+        None,
+        0
+    )
+    .is_err());
     groups::delete_group(&mut groups, &mut bookmarks, "work").unwrap();
     assert_eq!(bookmarks.len(), 3);
     assert!(bookmarks.iter().all(|b| b.group_id.is_none()));
@@ -91,7 +97,7 @@ fn private_groups_encrypt_and_legacy_array_upgrades_on_mutation() {
     assert_eq!(std::fs::read(&path).unwrap(), blob);
     vault.save_group(group("sensitive-group", 0), now).unwrap();
     vault
-        .move_bookmark("private", Some("sensitive-group".into()), 0, now)
+        .move_bookmark("private", Some("sensitive-group".into()), None, 0, now)
         .unwrap();
     vault.lock();
     assert!(vault.groups(now).is_err());

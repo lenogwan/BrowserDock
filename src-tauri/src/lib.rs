@@ -242,6 +242,70 @@ async fn open_group(
 }
 
 #[tauri::command]
+async fn open_bookmark_tree(
+    app: tauri::AppHandle,
+    id: String,
+    private: bool,
+    state: tauri::State<'_, LauncherState>,
+) -> Result<launcher::dispatch::GroupOutcome, String> {
+    let guard = group_guard(&app, private)?;
+    let config = current_config(&app)?;
+    let (groups, bookmarks) = if private {
+        let desktop = app
+            .try_state::<runtime::DesktopState>()
+            .ok_or("Configuration unavailable")?;
+        let epoch = desktop.gate.ticket().ok_or("Vault is locked")?;
+        let mut vault = desktop.vault.lock().map_err(|_| "Vault unavailable")?;
+        let result = (|| {
+            if !desktop.gate.valid(epoch) {
+                return Err("Vault is locked".to_string());
+            }
+            let now = std::time::Instant::now();
+            let data = (vault.groups(now)?, vault.list(now)?);
+            if !desktop.gate.valid(epoch) {
+                return Err("Vault is locked".to_string());
+            }
+            Ok(data)
+        })();
+        runtime::notify_lock(&app, &desktop, &mut vault);
+        result?
+    } else {
+        (
+            config.groups.clone(),
+            config
+                .bookmarks
+                .iter()
+                .filter_map(|v| serde_json::from_value::<launcher::vault::Bookmark>(v.clone()).ok())
+                .collect(),
+        )
+    };
+    let (tree, hint) = launcher::groups::bookmark_tree(&bookmarks, &groups, &id)?;
+    let outcome = launcher::dispatch::group_action_guarded(
+        &config,
+        state.companion.as_ref().ok(),
+        &tree,
+        &hint,
+        None,
+        false,
+        guard.clone(),
+    )
+    .await?;
+    if !guard() {
+        return Err("Bookmark subtree open was cancelled; earlier tabs may have changed".into());
+    }
+    if let Some(bookmark) = tree.last() {
+        let browser = bookmark.target_browser.as_str();
+        let exe = config
+            .browsers
+            .iter()
+            .find(|b| b.id == browser)
+            .map(|b| b.exe_path.as_str());
+        win32_helper::bring_browser_to_front(browser, exe);
+    }
+    Ok(outcome)
+}
+
+#[tauri::command]
 async fn close_group_tabs(
     app: tauri::AppHandle,
     group_id: String,
@@ -725,6 +789,7 @@ pub fn run() {
             open_url,
             close_tab,
             open_group,
+            open_bookmark_tree,
             close_group_tabs,
             companion_status,
             companion_tabs_digest,

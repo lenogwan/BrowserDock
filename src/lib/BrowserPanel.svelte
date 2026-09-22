@@ -251,7 +251,7 @@
     font-size: 11px;
   }
   .card.current {
-    border-color: #b8edc955;
+    border-color: var(--accent-alpha-33);
   }
   .card-name {
     font-weight: 600;

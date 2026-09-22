@@ -3,6 +3,8 @@ use crate::config::Config;
 use serde::{Deserialize, Serialize};
 #[derive(Clone, Deserialize, Serialize)]
 pub struct Settings {
+    #[serde(default = "default_theme")]
+    pub theme: String,
     #[serde(default)]
     pub window_size: crate::window_size::WindowSize,
     pub always_on_top: bool,
@@ -20,6 +22,13 @@ pub struct Settings {
 impl Settings {
     pub fn from_config(c: &Config) -> Self {
         Self {
+            theme: c
+                .settings
+                .get("theme")
+                .and_then(|v| v.as_str())
+                .filter(|s| VALID_THEMES.contains(s))
+                .unwrap_or("sage")
+                .into(),
             window_size: crate::window_size::WindowSize::from_value(c.settings.get("window_size"))
                 .0,
             always_on_top: c
@@ -69,6 +78,10 @@ impl Settings {
         }
     }
 }
+const VALID_THEMES: &[&str] = &["sage", "nord", "amber", "tokyo", "rose"];
+fn default_theme() -> String {
+    "sage".into()
+}
 fn default_true() -> bool {
     true
 }
@@ -78,6 +91,9 @@ fn default_opacity() -> f64 {
 impl Settings {
     pub fn validate(&self) -> Result<(), String> {
         self.window_size.validate()?;
+        if !VALID_THEMES.contains(&self.theme.as_str()) {
+            return Err("Theme must be one of: sage, nord, amber, tokyo, rose".into());
+        }
         if !self.opacity.is_finite() || !(0.3..=1.0).contains(&self.opacity) {
             return Err("Opacity must be 30–100%".into());
         }

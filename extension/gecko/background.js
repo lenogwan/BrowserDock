@@ -521,7 +521,8 @@ class Companion {
     this.checkRequest(ctx, request);
     const note = await this.ensureTabGroup(ctx, request, tabs);
     this.checkRequest(ctx, request);
-    if (!request.tab_group.collapsed) await this.api.tabs.update(tabs[0].id, { active: true });
+    // Collapse only suppresses activation when native grouping succeeded.
+    if (note || !request.tab_group.collapsed) await this.api.tabs.update(tabs[0].id, { active: true });
     this.checkRequest(ctx, request);
     await this.api.windows.update(window.id, { focused: true });
     return { id: request.id, status: 'SUCCESS', result: 'OPENED_GROUP', window_id: window.id, tab_id: tabs[0].id, note };

@@ -9,6 +9,7 @@ fn bookmark() -> Bookmark {
         tags: vec!["secret".into()],
         icon: String::new(),
         group_id: None,
+        parent_id: None,
         sort_order: 0,
         browser_options: None,
         pinned: false,

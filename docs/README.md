@@ -14,6 +14,8 @@ Start with [AGENTS](../AGENTS.md) and [current status](../PROGRESS.md). Load onl
 | UI decisions and recorded checks | [UI handover](UI-OPTIMIZATION-HANDOVER.md) |
 | Companion reliability and recorded checks | [Companion pass](companion-improvements-plan.md) |
 | Browser tab groups integration plan | [Tab groups integration plan](browser-tab-groups-plan.md) |
+| Nested bookmarks implementation plan | [Deep groups plan](deep-groups-plan.md) |
+| Five-theme implementation plan | [Theme settings plan](theme-settings-plan.md) |
 | Earlier QA findings and resolutions | [BUGS](../BUGS.md), [handover review](PRE-HANDOVER-REVIEW.md) |
 
 ## Historical implementation plans

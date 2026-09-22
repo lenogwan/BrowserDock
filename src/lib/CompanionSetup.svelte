@@ -214,7 +214,7 @@
     font-size: 11px;
   }
   .steps > li.current {
-    border-color: #b8edc955;
+    border-color: var(--accent-alpha-33);
   }
   .step-head {
     display: flex;
@@ -233,7 +233,7 @@
     font-size: 10px;
   }
   li.done .n {
-    background: #b8edc91f;
+    background: var(--accent-alpha-12);
     color: var(--accent);
   }
   .steps p {

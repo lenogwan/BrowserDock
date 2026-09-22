@@ -1,7 +1,10 @@
 <script lang="ts">
+  import { buildTree, canNest } from "./trees.js";
+  import { entryKey } from "./ids.js";
   import type { Bookmark, Browser, Group } from "./types";
   let {
     bookmark,
+    bookmarks = [],
     browsers,
     groups = [],
     profiles = [],
@@ -11,6 +14,7 @@
     oncancel,
   }: {
     bookmark: Bookmark;
+    bookmarks?: Bookmark[];
     browsers: Browser[];
     groups?: Group[];
     profiles?: string[];
@@ -30,6 +34,16 @@
   let tags = $state(bookmark.tags.join(", "));
   // svelte-ignore state_referenced_locally
   let groupId = $state(bookmark.group_id ?? "");
+  // svelte-ignore state_referenced_locally
+  let parentId = $state(bookmark.parent_id ?? "");
+  const parents = $derived(bookmarks.filter(parent=>canNest(bookmarks,bookmark,parent)));
+  const tree = $derived(buildTree(bookmarks));
+  const selectedParent = $derived(parents.find(parent=>parent.id===parentId));
+  $effect(()=>{if(selectedParent)groupId=selectedParent.group_id??"";});
+  function parentLabel(parent: Bookmark) {
+    const node = tree.index.get(entryKey(parent));
+    return node?.parent ? `${node.parent.item.title} / ${parent.title}` : parent.title;
+  }
   // svelte-ignore state_referenced_locally
   let profile = $state(bookmark.browser_options?.profile ?? "");
   // svelte-ignore state_referenced_locally
@@ -52,6 +66,7 @@
         url,
         target_browser: target,
         group_id: groupId || null,
+        parent_id: parentId || null,
         browser_options: { profile: profile.trim() || null, container: container.trim() || null, incognito },
         tags: tags
           .split(",")
@@ -87,7 +102,9 @@
         >{/each}</select
     ></label
   >
-  <label>Group<select aria-label="Group" bind:value={groupId}><option value="">Ungrouped</option>{#each groups as group}<option value={group.id}>{group.name}</option>{/each}</select></label>
+  <label>Parent<select aria-label="Parent" bind:value={parentId}><option value="">None</option>{#each parents as parent}<option value={parent.id}>{parentLabel(parent)}</option>{/each}</select></label>
+  {#if selectedParent}<p class="muted">Group follows the parent bookmark.</p>{/if}
+  <label>Group<select aria-label="Group" disabled={!!selectedParent} bind:value={groupId}><option value="">Ungrouped</option>{#each groups as group}<option value={group.id}>{group.name}</option>{/each}</select></label>
   {#if ["chrome", "edge"].includes(target)}
     <label>Profile<input bind:value={profile} list="profile-hints" placeholder="Use browser default" maxlength="128" pattern="[A-Za-z0-9 _.\-]+" title="Letters, numbers, spaces and _ . - only" /></label>
     <datalist id="profile-hints">{#each [...new Set(["Default", "Profile 1", ...profiles, ...hints])] as hint}<option value={hint}></option>{/each}</datalist>
