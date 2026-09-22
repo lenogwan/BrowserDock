@@ -21,7 +21,7 @@ export async function build(output = root) {
   const common = {
     manifest_version: 3,
     name: 'BrowserDock Companion',
-    version: '1.0.4',
+    version: '1.0.5',
     description: 'Connect this browser to BrowserDock on your computer to focus or open tabs.',
     permissions: ['tabs', 'storage', 'alarms', 'tabGroups'],
     host_permissions: ['http://127.0.0.1/*'],
