@@ -4,7 +4,12 @@ import { readFile, mkdtemp } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import vm from 'node:vm';
-import { build } from '../build.mjs';
+import { build, stripModuleSyntax } from '../build.mjs';
+
+test('build strips named imports with Windows line endings', () => {
+  const source = "import { safeUrl, GROUP_COLORS, encoder } from './protocol.js';\r\n\r\nexport function inventory() { return safeUrl; }\r\n";
+  assert.equal(stripModuleSyntax(source, 'src/inventory.js'), '\r\nfunction inventory() { return safeUrl; }\r\n');
+});
 
 test('build produces complete distinct local-only Chromium and Gecko distributions', async () => {
   const output = await mkdtemp(join(tmpdir(), 'browserdock-extension-'));

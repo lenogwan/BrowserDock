@@ -107,7 +107,6 @@ function validGroup(hint) {
 }
 
 
-
 function inventory(tabs, includePrivate = false, limit = 200, groups = []) {
   const result = [];
   for (const tab of tabs) {
@@ -124,7 +123,6 @@ function inventory(tabs, includePrivate = false, limit = 200, groups = []) {
   }
   return result;
 }
-
 
 
 function installActions(prototype) {

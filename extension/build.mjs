@@ -5,17 +5,17 @@ import { join, resolve } from 'node:path';
 const root = fileURLToPath(new URL('.', import.meta.url));
 // Source modules use local named imports for Node tests. The extension build
 // concatenates them in dependency order into classic scripts for MV3/Gecko.
-function stripModuleSyntax(source, file) {
+export function stripModuleSyntax(source, file) {
   if (/^\s*export\s+(default|\{|\*)/m.test(source)) {
     throw new Error(`${file}: unsupported export form (only "export <declaration>" is supported)`);
   }
-  const imports = [...source.matchAll(/^import\s+[^\n]+/gm)];
+  const imports = [...source.matchAll(/^import[ \t]+[^\r\n]+/gm)];
   for (const [statement] of imports) {
     if (!/^import\s+\{[^}]+\}\s+from\s+['"]\.\/[a-z-]+\.js['"];?$/.test(statement)) {
       throw new Error(`${file}: unsupported import form`);
     }
   }
-  return source.replace(/^import\s+[^\n]+\n/gm, '').replace(/^export (?=(?:async\s+)?(?:function|class|const|let|var)\b)/gm, '');
+  return source.replace(/^import[ \t]+[^\r\n]+(?:\r?\n|$)/gm, '').replace(/^export (?=(?:async\s+)?(?:function|class|const|let|var)\b)/gm, '');
 }
 export async function build(output = root) {
   const modules = {};

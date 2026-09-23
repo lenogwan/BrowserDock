@@ -106,7 +106,6 @@ function validGroup(hint) {
     && (hint.collapsed == null || typeof hint.collapsed === 'boolean');
 }
 
-
 const optionsApi = globalThis.browser ?? globalThis.chrome;
 const form = document.getElementById('pairing-form');
 const browserField = document.getElementById('browser');
