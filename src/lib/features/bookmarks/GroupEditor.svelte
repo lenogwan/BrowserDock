@@ -1,5 +1,5 @@
 <script lang="ts">
- import type {Group} from './types';
+ import type {Group} from '../../shared/types';
  let {group,groups,onsave,ondelete,oncancel,onreorder}:{group:Group;groups:Group[];onsave:(group:Group)=>Promise<void>;ondelete:()=>Promise<void>;oncancel:()=>void;onreorder:(direction:number)=>Promise<void>}=$props();
  // svelte-ignore state_referenced_locally
  let name=$state(group.name);

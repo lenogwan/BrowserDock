@@ -1,6 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { Companion, validPairing, safeUrl, inventory, nearestGroupColor } from '../src/core.js';
+import { Companion } from '../src/core.js';
+import { validPairing, safeUrl, nearestGroupColor } from '../src/protocol.js';
+import { inventory } from '../src/inventory.js';
 
 const pairing = { browser: 'mullvad', token: '7d8bab34-411a-48ee-ae6c-8b1b1b110951', port: 49300 };
 const tab = (id, url, more = {}) => ({ id, url, title: 'Example', windowId: 10, incognito: false, ...more });

@@ -131,6 +131,10 @@ try {
     // Chromium can quantize the computed alpha to 8 bits.
     return color.startsWith('rgba(23, 28, 30,') && Math.abs(Number(color.match(/, ([\d.]+)\)$/)?.[1])-0.288)<0.003;
   });
+  for(const selector of ['.panel','.search-field']) {
+    const alpha=await page.locator(selector).evaluate(e=>Number(getComputedStyle(e).backgroundColor.match(/, ([\d.]+)\)$/)?.[1]));
+    assert.ok(Math.abs(alpha-0.78)<0.003,`${selector} keeps a readable surface at 30% opacity`);
+  }
   await page.getByRole('radio',{name:'Nord Frost',exact:true}).check();
   await page.getByRole('button',{name:'Discard',exact:true}).click();
   assert.equal(await page.locator('main').getAttribute('data-theme'),'sage');

@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { resizeFromPointer, createSizeController } from '../src/lib/resize.js';
+import { resizeFromPointer, createSizeController } from '../src/lib/features/dock/resize.js';
 
 // Tauri runs synchronous commands on the UI thread. These commands acquire
 // locks also held by auto-fit while it waits for a UI-thread window getter.

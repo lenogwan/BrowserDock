@@ -1,7 +1,7 @@
 import { buildTree, siblingOrder, validateTree } from "./trees.js";
-/** @typedef {{group: import('./types').Group | null; private: boolean; items: import('./types').Bookmark[], roots?: import('./trees.js').TreeNode[]}} Section */
+/** @typedef {{group: import('../../shared/types').Group | null; private: boolean; items: import('../../shared/types').Bookmark[], roots?: import('./trees.js').TreeNode[]}} Section */
 const sectionsCache = /** @type {WeakMap<object, WeakMap<object, Section[]>>} */ (new WeakMap());
-/** @param {import('./types').Bookmark[]} items @param {import('./types').Group[]} groups @returns {Section[]} */
+/** @param {import('../../shared/types').Bookmark[]} items @param {import('../../shared/types').Group[]} groups @returns {Section[]} */
 export function groupSections(items, groups) {
   // Component `$derived` arrays keep identity until data changes, so the three
   // call sites per render (results, keyboard nav, list sections) share one result.
@@ -13,7 +13,7 @@ export function groupSections(items, groups) {
   byGroups.set(groups, sections);
   return sections;
 }
-/** @param {import('./types').Bookmark[]} items @param {import('./types').Group[]} groups */
+/** @param {import('../../shared/types').Bookmark[]} items @param {import('../../shared/types').Group[]} groups */
 function buildSections(items, groups) {
   const ordered = [...groups].sort(
     (a, b) => a.sort_order - b.sort_order || a.id.localeCompare(b.id),
@@ -24,10 +24,10 @@ function buildSections(items, groups) {
       groups.some((g) => !!g.private === scope),
   );
   const sortItems =
-    /** @param {import('./types').Bookmark[]} list @returns {import('./types').Bookmark[]} */
+    /** @param {import('../../shared/types').Bookmark[]} list @returns {import('../../shared/types').Bookmark[]} */
     (list) =>
       list.toSorted(
-        /** @param {import('./types').Bookmark} a @param {import('./types').Bookmark} b */
+        /** @param {import('../../shared/types').Bookmark} a @param {import('../../shared/types').Bookmark} b */
         (a, b) =>
           (a.sort_order ?? 0) - (b.sort_order ?? 0) ||
           a.title.localeCompare(b.title) ||
@@ -54,7 +54,7 @@ function buildSections(items, groups) {
   return [...groupSections, ...ungrouped].map(section=>({...section, roots: buildTree(section.items).roots}));
 }
 /** Immutable draft: the caller retains the original for persistence rollback.
- * @param {import('./types').Bookmark[]} items @param {string} id @param {string|null} groupId @param {number} index @param {string|null|undefined} [parentId] */
+ * @param {import('../../shared/types').Bookmark[]} items @param {string} id @param {string|null} groupId @param {number} index @param {string|null|undefined} [parentId] */
 export function moveBookmark(items,id,groupId,index,parentId) {
  const item=items.find(b=>b.id===id); if(!item)return items;
  const draft=items.map(b=>({...b}));
@@ -78,10 +78,10 @@ export function moveBookmark(items,id,groupId,index,parentId) {
  siblings.forEach((b,i)=>b.sort_order=i);
  const partitions=new Map();
  for(const b of draft) {const key=JSON.stringify([!!b.private,b.group_id??null,b.parent_id??null]);if(!partitions.has(key))partitions.set(key,[]);partitions.get(key).push(b);}
- for(const partition of partitions.values())partition.sort(siblingOrder).forEach((/** @type {import('./types').Bookmark} */ b,/** @type {number} */ i)=>b.sort_order=i);
+ for(const partition of partitions.values())partition.sort(siblingOrder).forEach((/** @type {import('../../shared/types').Bookmark} */ b,/** @type {number} */ i)=>b.sort_order=i);
  return draft;
 }
-/** @param {import('./types').Bookmark} item @param {import('./types').Browser[]} browsers */
+/** @param {import('../../shared/types').Bookmark} item @param {import('../../shared/types').Browser[]} browsers */
 export function targetLabel(item,browsers) {
  const browser=browsers.find(b=>b.id===item.target_browser);
  const option=['chrome','edge'].includes(item.target_browser)?item.browser_options?.profile||browser?.profile:['firefox','mullvad'].includes(item.target_browser)?item.browser_options?.container||browser?.container:null;

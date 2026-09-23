@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { buildTree, visibleTree, canNest, loadExpansion, saveExpansion, purgePrivateExpansion, EXPANSION_KEY } from '../src/lib/trees.js';
-import { moveBookmark, groupSections } from '../src/lib/groups.js';
+import { buildTree, visibleTree, canNest, loadExpansion, saveExpansion, purgePrivateExpansion, EXPANSION_KEY } from '../src/lib/features/bookmarks/trees.js';
+import { moveBookmark, groupSections } from '../src/lib/features/bookmarks/groups.js';
 const item=(id,parent_id=null,more={})=>({id,title:id,url:'https://example.com',target_browser:'firefox',tags:[],parent_id,...more});
 test('trees sort siblings, count descendants and flatten only expanded branches',()=>{
  const items=[item('root'),item('z','root'),item('a','root'),item('grand','a')];

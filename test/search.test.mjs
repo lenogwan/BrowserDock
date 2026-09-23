@@ -12,7 +12,7 @@ import {
   recentFirst,
   rankResults,
   shortcutBrowser,
-} from "../src/lib/search.js";
+} from "../src/lib/features/bookmarks/search.js";
 const bookmarks = [
   {
     id: "1",

@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onDestroy } from "svelte";
   import { LockKeyhole, ShieldCheck } from "lucide-svelte";
-  import type { VaultStatus } from "./types";
+  import type { VaultStatus } from "../../shared/types";
   let {
     status,
     onsubmit,

@@ -4,7 +4,7 @@ import { readFile } from 'node:fs/promises';
 import vm from 'node:vm';
 
 async function loadCore() {
-  const core = (await readFile(new URL('../src/core.js', import.meta.url), 'utf8')).replace(/^export /gm, '');
+  const core = (await readFile(new URL('../src/protocol.js', import.meta.url), 'utf8')).replace(/^export /gm, '');
   const ctx = vm.createContext({ TextEncoder, TextDecoder, URL });
   new vm.Script(`${core}\nglobalThis.__api = { parsePairingInput, decodePairingCode, validPairing };`).runInContext(ctx);
   return vm.runInContext('__api', ctx);
@@ -44,7 +44,7 @@ test('raw pairing file JSON is accepted and invalid input rejected', async () =>
 });
 
 test('pairing text is bounded before decoding or parsing', async () => {
-  const { parsePairingInput } = await import('../src/core.js');
+  const { parsePairingInput } = await import('../src/protocol.js');
   assert.equal(parsePairingInput('BD1.' + 'a'.repeat(16384)).ok, false);
   assert.match(parsePairingInput(' '.repeat(16385)).error, /too large/i);
 });

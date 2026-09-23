@@ -1,6 +1,7 @@
 <script lang="ts">
-  import { invoke, isTauri } from "@tauri-apps/api/core";
-  import { listen } from "@tauri-apps/api/event";
+  import { isTauri } from "@tauri-apps/api/core";
+  import { invokeCommand } from "$lib/platform/tauri/commands";
+  import { listenDockEvent } from "$lib/platform/tauri/events";
   import { getCurrentWindow } from "@tauri-apps/api/window";
   import { onMount, tick, untrack } from "svelte";
   import {
@@ -17,116 +18,84 @@
     ArrowUpRight,
     ChevronLeft,
   } from "lucide-svelte";
-  import SearchBar from "$lib/SearchBar.svelte";
-  import BrowserBadge from "$lib/BrowserBadge.svelte";
-  import BookmarkList from "$lib/BookmarkList.svelte";
-  import VaultModal from "$lib/VaultModal.svelte";
-  import SettingsView from "$lib/SettingsView.svelte";
-  import CompanionSetup from "$lib/CompanionSetup.svelte";  import GroupEditor from "$lib/GroupEditor.svelte";
-  import ResizeGrip from "$lib/ResizeGrip.svelte";
-  import { createSizeController } from "$lib/resize.js";
-  import { buildTree, visibleTree, loadExpansion, saveExpansion, purgePrivateExpansion } from "$lib/trees.js";
-  import { groupSections, moveBookmark } from "$lib/groups.js";
-  import { entryId, entryKey } from "$lib/ids.js";
-  import BookmarkEditor from "$lib/BookmarkEditor.svelte";
-  import { searchBookmarks, directUrl, shortcutBrowser, buildOpenTabIndex, isTabOpen, rankResults } from "$lib/search.js";
-  import { loadRecentMap, recordRecent, saveRecentMap } from "$lib/recents.js";
-  import { normalizeTheme } from "$lib/themes";
+  import SearchBar from "$lib/features/bookmarks/SearchBar.svelte";
+  import BrowserBadge from "$lib/features/browsers/BrowserBadge.svelte";
+  import { BookmarksController, type BookmarkContext } from "$lib/features/bookmarks/controller.svelte";
+  import BookmarkList from "$lib/features/bookmarks/BookmarkList.svelte";
+  import { VaultController } from "$lib/features/vault/controller.svelte";
+  import VaultModal from "$lib/features/vault/VaultModal.svelte";
+  import { SettingsController } from "$lib/features/settings/controller.svelte";
+  import SettingsView from "$lib/features/settings/SettingsView.svelte";
+  import { CompanionController } from "$lib/features/companion/controller.svelte";
+  import GroupEditor from "$lib/features/bookmarks/GroupEditor.svelte";
+  import ResizeGrip from "$lib/features/dock/ResizeGrip.svelte";
+  import { WindowController } from "$lib/features/dock/controller.svelte";
+  import { buildTree, visibleTree } from "$lib/features/bookmarks/trees.js";
+  import { groupSections } from "$lib/features/bookmarks/groups.js";
+  import { entryKey } from "$lib/features/bookmarks/ids.js";
+  import BookmarkEditor from "$lib/features/bookmarks/BookmarkEditor.svelte";
+  import { searchBookmarks, directUrl, shortcutBrowser, buildOpenTabIndex, isTabOpen, rankResults } from "$lib/features/bookmarks/search.js";
   import type {
-    ThemeId,
     Group,
     WindowSize,
     Bookmark,
     Browser,
     Settings,
-    VaultStatus,
-    InstanceDigest,
-  } from "$lib/types";
+  } from "$lib/shared/types";
 
-  let native = $state(false),
-    ready = $state(false),
-    expanded = $state(false),
-    strip = $state(false),
-    dockVisible = $state(true);
+  const windowController = new WindowController();
   let query = $state(""),
     override = $state<string | null>(null),
     selected = $state(0),
     navTick = $state(0),
     openOnly = $state(false),
-    recentMap = $state(loadRecentMap()),
     error = $state(""),
     notice = $state("");
   let view = $state<"search" | "vault" | "settings">("search");
-  let groups = $state<Group[]>([]), privateGroups = $state<Group[]>([]);
-  let editingGroup = $state<Group|null>(null);
-  let previewTheme = $state<ThemeId | null>(null);
-  let opacityPreview = $state<number|null>(null);
-  let profileHints = $state<string[]>([]);
-  let moving = $state(false);
-  let treeExpanded = $state<Record<string, boolean>>(loadExpansion());
-  let editing = $state<Bookmark | null>(null);
-  let bookmarks = $state<Bookmark[]>([]),
-    privateBookmarks = $state<Bookmark[]>([]),
-    instances = $state<InstanceDigest[]>([]);
+  const bookmarkController = new BookmarksController();
   let browsers = $state<Browser[]>([
     { id: "firefox", name: "Firefox", color: "#ffab75", exe_path: "" },
     { id: "mullvad", name: "Mullvad", color: "#99d5a6", exe_path: "" },
     { id: "chrome", name: "Chrome", color: "#a6bdff", exe_path: "" },
     { id: "edge", name: "Edge", color: "#83d6df", exe_path: "" },
   ]);
-  let settings = $state<Settings>({
-    theme: "sage",
-    window_size: {width:400,height:null},
-    always_on_top: true,
-    auto_hide: false,
-    hide_on_open: true,
-    auto_tab_groups: true,
-    opacity: 1,
-    vault_timeout_minutes: 5,
-    global_shortcut: "Ctrl+Shift+Space",
-    panic_shortcut: "Ctrl+Alt+L",
-  });
-  let vault = $state<VaultStatus>({
-    exists: false,
-    locked: true,
-    retry_after_seconds: 0,
-  });
+  const settingsController = new SettingsController();
+  const vaultController = new VaultController();
+  const bookmarkContext: BookmarkContext = {
+    get generation() { return vaultController.generation; },
+    get privateBookmarks() { return vaultController.bookmarks; },
+    set privateBookmarks(value) { vaultController.bookmarks = value; },
+    get privateGroups() { return vaultController.groups; },
+    refreshPublic: loadPublic,
+    refreshPrivate: loadPrivate,
+    reportError: (cause) => { error = String(cause); },
+  };
   let busy = $state(false),
     input = $state<HTMLInputElement | undefined>(undefined);
-  let settingsDirty = $state(false),
-    discardRequest = $state(0),
-    confirmBack = $state(false),
-    backTimer: ReturnType<typeof setTimeout> | undefined;
-  let generation = 0,
-    mounted = true,
+  let mounted = true,
     lastActivity = 0,
     hideTimer: ReturnType<typeof setTimeout> | undefined,
     routeTimer: ReturnType<typeof setTimeout> | undefined,
     dragTimer: ReturnType<typeof setTimeout> | undefined,
     dragPolling = false,
     dragSequence = 0;
-  let companionError = $state("");
+  const companion = new CompanionController();
   let toastTimer: ReturnType<typeof setTimeout> | undefined;
-  // Last applied tab digest (JSON): the 1s poll assigns a fresh array
-  // identity every tick, which would recompute ranking over every bookmark
-  // even when nothing changed. Skip identical snapshots.
-  let lastDigest = "";
   let route = $state("firefox");
   let routeGeneration = 0;
-  const sizeController = createSizeController((command,args)=>native?invoke(command,args):Promise.reject('Open the desktop app to resize the dock.'));
   async function commitSize(value:WindowSize){
-    await sizeController.commit();
-    settings={...settings,window_size:{...value}};
+    await windowController.size.commit();
+    settingsController.setWindowSize(value);
   }
   const all = $derived(
-    view === "vault" ? privateBookmarks : [...bookmarks, ...privateBookmarks],
+    view === "vault" ? vaultController.bookmarks : [...bookmarkController.bookmarks, ...vaultController.bookmarks],
   );
   const allTree = $derived(buildTree(all));
-  const visibleGroups = $derived(view === "vault" ? privateGroups : [...groups, ...privateGroups]);
+  const visibleGroups = $derived(view === "vault" ? vaultController.groups : [...bookmarkController.groups, ...vaultController.groups]);
   const matched = $derived(searchBookmarks(all, query, visibleGroups));
   // Open-tab lookup is precomputed once per companion snapshot so row renders
   // never parse tab URLs (the per-second poll only delivers parsed hosts).
-  const openTabs = $derived(buildOpenTabIndex(instances));
+  const openTabs = $derived(buildOpenTabIndex(companion.instances));
   // Massive-list handling: optional open-only filter, then per-section ranking
   // (open → pinned → recent) so live and favorite places surface without
   // disturbing group structure.
@@ -135,14 +104,14 @@
     ? [{ group: null, private: false, items: openMatched }]
     : groupSections(openMatched, visibleGroups));
   const sections = $derived(baseSections.map((section) => {
-    if (query.trim()) return {...section, items: rankResults(section.items, openTabs, recentMap)};
+    if (query.trim()) return {...section, items: rankResults(section.items, openTabs, bookmarkController.recentMap)};
     const roots = buildTree(section.items).roots;
-    const order = rankResults(roots.map(node=>node.item), openTabs, recentMap);
+    const order = rankResults(roots.map(node=>node.item), openTabs, bookmarkController.recentMap);
     const byKey = new Map(roots.map(node=>[entryKey(node.item),node]));
     return {...section, roots: order.map(item=>byKey.get(entryKey(item))!)};
   }));
   const results = $derived(sections.flatMap((section) => section.items));
-  const keyboardResults = $derived(query.trim() ? results : sections.filter((section) => !section.group?.collapsed).flatMap((section) => visibleTree(section.roots ?? [], treeExpanded).map(node=>node.item)));
+  const keyboardResults = $derived(query.trim() ? results : sections.filter((section) => !section.group?.collapsed).flatMap((section) => visibleTree(section.roots ?? [], bookmarkController.treeExpanded).map(node=>node.item)));
   const activeKey = $derived.by(() => {
     if (url && selected === 0) return null;
     const current = keyboardResults[selected - (url ? 1 : 0)];
@@ -153,9 +122,9 @@
   // between "companion not connected" and "connected but syncing zero tabs"
   // (e.g. private-only windows without the private-tabs opt-in).
   const companionSummary = $derived(
-    instances.length
+    companion.instances.length
       ? [
-          ...instances.reduce(
+          ...companion.instances.reduce(
             (totals, i) => totals.set(i.browser, (totals.get(i.browser) ?? 0) + i.tabs.length),
             new Map(),
           ),
@@ -165,16 +134,16 @@
       : "",
   );
   const height = $derived(
-    strip
+    windowController.strip
       ? 6
-      : !expanded
+      : !windowController.expanded
         ? 56
-        : editing || editingGroup
+        : bookmarkController.editing || bookmarkController.editingGroup
           ? 540
           : view === "settings"
             ? 560
-            : view === "vault" && vault.locked
-              ? vault.exists
+            : view === "vault" && vaultController.status.locked
+              ? vaultController.status.exists
                 ? 410
                 : 490
               : 440,
@@ -191,20 +160,20 @@
   });
   $effect(() => {
     const h = height;
-    if (native)
-      invoke("dock_resize", { height: h }).catch((e) => (error = String(e)));
+    if (windowController.native)
+      invokeCommand("dock_resize", { height: h }).catch((e) => (error = String(e)));
   });
   $effect(() => {
     const value = url;
     const chosen = override;
     if (routeTimer) clearTimeout(routeTimer);
-    if (!native || !value) return;
+    if (!windowController.native || !value) return;
     const current = ++routeGeneration;
     // Route preview is IPC per keystroke without this; trailing-edge debounce
     // keeps typing at 60fps while the label still follows within ~120ms.
     routeTimer = setTimeout(() => {
       if (!mounted) return;
-      invoke<{browser_id:string;profile?:string;container?:string}>("route_details", { url: value, browserId: chosen })
+      invokeCommand("route_details", { url: value, browserId: chosen })
         .then((details) => {
           if (current === routeGeneration) route = [details.browser_id, details.profile || details.container].filter(Boolean).join(" · ");
         })
@@ -224,24 +193,18 @@
     if (query === "/vault") {
       query = "";
       view = "vault";
-      expanded = true;
+      windowController.expanded = true;
     }
     if (query === "/open") {
       query = "";
       openOnly = true;
-      expanded = true;
+      windowController.expanded = true;
     }
   });
 
   function clearPrivate(markLocked = true) {
-    generation++;
-    treeExpanded = purgePrivateExpansion(treeExpanded);
-    saveExpansion(treeExpanded);
-    privateBookmarks = [];
-    privateGroups = [];
-    editingGroup = null;
-    if (markLocked) vault = { ...vault, locked: true };
-    editing = null;
+    vaultController.clear(markLocked);
+    bookmarkController.clearPrivatePresentation();
     view = "search";
     query = "";
     selected = 0;
@@ -249,23 +212,13 @@
     notice = "";
     busy = false;
   }
-  function applyDigest(status: { instances: InstanceDigest[]; error: string | null }) {
-    // Digest payloads are a few KB; one stringify per tick is far cheaper
-    // than re-ranking every bookmark on an unchanged snapshot.
-    const digest = JSON.stringify(status.instances);
-    if (digest !== lastDigest) {
-      lastDigest = digest;
-      instances = status.instances;
-    }
-    companionError = status.error ?? "";
-  }
   function activity() {
     if (hideTimer) clearTimeout(hideTimer);
-    if (!native) return;
+    if (!windowController.native) return;
     const now = Date.now();
     if (now - lastActivity > 1000) {
       lastActivity = now;
-      invoke("vault_activity").catch(() => {});
+      invokeCommand("vault_activity").catch(() => {});
     }
   }
   // Non-throwing by design: every caller (mount, summon, poll, save flows)
@@ -273,57 +226,44 @@
   // IPC failure into an unhandled rejection. Failures surface via `error`.
   async function loadPublic() {
     try {
-      const data = await invoke<{
-        bookmarks: Bookmark[];
-        groups?: Group[];
-        browsers: Browser[];
-        settings: Settings;
-        warnings: string[];
-      }>("get_dock_data");
+      const data = await invokeCommand("get_dock_data");
       if (!mounted) return;
       if (!Array.isArray(data.bookmarks) || !Array.isArray(data.browsers) || typeof data.settings !== "object" || data.settings === null) {
         throw "Invalid dock data received from the backend.";
       }
-      bookmarks = data.bookmarks;
-      groups = data.groups ?? [];
+      bookmarkController.bookmarks = data.bookmarks;
+      bookmarkController.groups = data.groups ?? [];
       browsers = data.browsers;
-      settings = { ...data.settings, theme: normalizeTheme(data.settings.theme), auto_tab_groups: data.settings.auto_tab_groups ?? true, window_size:data.settings.window_size??{width:400,height:null}, hide_on_open: data.settings.hide_on_open ?? true, opacity: Math.max(0.3, Math.min(1, data.settings.opacity ?? 1)) };
+      settingsController.load(data.settings);
       if (data.warnings?.length) error = data.warnings.join(" ");
     } catch (e) {
       if (mounted) error = String(e);
     }
   }
   async function refreshVault() {
-    const current = generation;
+    const current = vaultController.generation;
     try {
-      const status = await invoke<VaultStatus>("vault_status");
-      if (!mounted || current !== generation) return;
-      if (status.locked && !vault.locked) clearPrivate();
-      vault = status;
+      await vaultController.refresh(() => mounted, clearPrivate);
     } catch (e) {
-      if (mounted && current === generation) error = String(e);
+      if (mounted && current === vaultController.generation) error = String(e);
     }
   }
   async function loadPrivate() {
-    const current = generation;
+    const current = vaultController.generation;
     try {
-      const data = await invoke<Bookmark[] | { bookmarks: Bookmark[]; groups: Group[] }>("vault_list");
-      if (mounted && generation === current && !vault.locked) {
-        privateBookmarks = (Array.isArray(data) ? data : data.bookmarks).map((b) => ({ ...b, private: true }));
-        privateGroups = (Array.isArray(data) ? [] : data.groups ?? []).map(g=>({...g,private:true}));
-      }
+      await vaultController.loadPrivate(() => mounted);
     } catch (e) {
-      if (mounted && generation === current) error = String(e);
+      if (mounted && current === vaultController.generation) error = String(e);
     }
   }
   async function authenticate(secret: string, create: boolean) {
-    if (!native) throw "Open the desktop app to use the encrypted vault.";
-    const current = generation;
+    if (!windowController.native) throw "Open the desktop app to use the encrypted vault.";
+    const current = vaultController.generation;
     try {
-      await invoke("vault_auth", { secret, create });
-      if (current !== generation || !mounted) return;
+      await vaultController.authenticate(secret, create);
+      if (current !== vaultController.generation || !mounted) return;
       await refreshVault();
-      if (current === generation && !vault.locked) {
+      if (current === vaultController.generation && !vaultController.status.locked) {
         await loadPrivate();
         await tick();
         input?.focus();
@@ -331,7 +271,7 @@
     } finally {
       // `refreshVault` is non-throwing, but never let a status re-read mask
       // the auth result if that contract ever changes.
-      if (current === generation) {
+      if (current === vaultController.generation) {
         try {
           await refreshVault();
         } catch (e) {
@@ -342,140 +282,127 @@
   }
   async function lock() {
     clearPrivate();
-    if (native) await invoke("vault_lock");
+    if (windowController.native) await vaultController.lock();
   }
   async function open(bookmark?: Bookmark, force = false) {
     if (force && bookmark && (allTree.index.get(entryKey(bookmark))?.count ?? 0) > 0) { await openSubtree(bookmark); return; }
     if (busy) return;
-    if (!native) {
+    if (!windowController.native) {
       error = "Open the desktop app to launch a browser.";
       return;
     }
     const target = bookmark?.url ?? url;
     if (!target) return;
-    const current = generation;
+    const current = vaultController.generation;
     busy = true;
     error = "";
     try {
-      const outcome = await invoke<{note?:string;browser_id?:string}>("open_url", {
+      const outcome = await invokeCommand("open_url", {
         url: target,
         browserId: override ?? bookmark?.target_browser ?? null,
         forceNewTab: force,
         bookmarkId: bookmark?.id ?? null,
         bookmarkPrivate: !!bookmark?.private,
       });
-      if (current === generation) {
+      if (current === vaultController.generation) {
         // Recently-opened ranking is local only (IDs + timestamps, no URLs),
         // so successful opens never force a config/vault rewrite.
         if (bookmark) {
-          recordRecent(recentMap, bookmark.id);
-          saveRecentMap(recentMap);
+          bookmarkController.recordOpen(bookmark);
         }
         query = "";
         override = null;
         notice = outcome?.note ?? `Opened in ${outcome?.browser_id ?? override ?? bookmark?.target_browser ?? route.split(" · ")[0]}`;
-        if (settings.hide_on_open) {
-          await invoke("dock_hide");
-          expanded = false;
-          dockVisible = false;
+        if (settingsController.settings.hide_on_open) {
+          await invokeCommand("dock_hide");
+          windowController.expanded = false;
+          windowController.dockVisible = false;
         }
       }
     } catch (e) {
-      if (current === generation) error = String(e);
+      if (current === vaultController.generation) error = String(e);
     } finally {
-      if (current === generation) busy = false;
+      if (current === vaultController.generation) busy = false;
     }
   }
   function toggleTree(bookmark: Bookmark, expand?: boolean) {
-    const key = entryKey(bookmark);
-    const next = {...treeExpanded};
-    if (expand ?? !next[key]) next[key] = true; else delete next[key];
-    treeExpanded = next;
-    saveExpansion(next);
+    bookmarkController.toggleTree(bookmark, expand);
     navTick++;
   }
   async function openSubtree(bookmark: Bookmark) {
     if (busy) return;
-    if (!native) { error = "Open the desktop app to open bookmark subtrees."; return; }
-    const current = generation;
+    if (!windowController.native) { error = "Open the desktop app to open bookmark subtrees."; return; }
+    const current = vaultController.generation;
     busy = true; error = "";
     try {
-      const outcome = await invoke<{processed:number;note?:string}>("open_bookmark_tree", {id:bookmark.id,private:!!bookmark.private});
-      if (current !== generation) return;
+      const outcome = await invokeCommand("open_bookmark_tree", {id:bookmark.id,private:!!bookmark.private});
+      if (current !== vaultController.generation) return;
       notice = outcome.note ?? `Opened ${outcome.processed} tabs for ${bookmark.title}`;
       query = ""; override = null;
-      if(settings.hide_on_open) {
-        await invoke("dock_hide");
-        if(current !== generation)return;
-        expanded = false; dockVisible = false;
+      if(settingsController.settings.hide_on_open) {
+        await invokeCommand("dock_hide");
+        if(current !== vaultController.generation)return;
+        windowController.expanded = false; windowController.dockVisible = false;
       }
-    } catch(e) {if(current===generation)error=String(e);}
-    finally {if(current===generation)busy=false;}
+    } catch(e) {if(current===vaultController.generation)error=String(e);}
+    finally {if(current===vaultController.generation)busy=false;}
   }
   async function groupAction(group: Group, close = false) {
     if (busy) return;
-    if (!native) { error = "Open the desktop app to manage browser tab groups."; return; }
-    const current = generation;
+    if (!windowController.native) { error = "Open the desktop app to manage browser tab groups."; return; }
+    const current = vaultController.generation;
     busy = true;
     error = "";
     try {
-      const outcome = await invoke<{processed: number; note?: string}>(close ? "close_group_tabs" : "open_group", {
+      const outcome = await invokeCommand(close ? "close_group_tabs" : "open_group", {
         groupId: group.id, private: !!group.private,
       });
-      if (current !== generation) return;
+      if (current !== vaultController.generation) return;
       notice = outcome.note ?? `${close ? 'Closed' : 'Opened'} ${outcome.processed} tab${outcome.processed === 1 ? '' : 's'} for ${group.name}`;
       if (!close) {
         query = "";
         override = null;
-        if (settings.hide_on_open) {
-          await invoke("dock_hide");
-          if (current !== generation) return;
-          expanded = false;
-          dockVisible = false;
+        if (settingsController.settings.hide_on_open) {
+          await invokeCommand("dock_hide");
+          if (current !== vaultController.generation) return;
+          windowController.expanded = false;
+          windowController.dockVisible = false;
         }
       }
     } catch (e) {
-      if (current === generation) error = String(e);
+      if (current === vaultController.generation) error = String(e);
     } finally {
-      if (current === generation) busy = false;
+      if (current === vaultController.generation) busy = false;
     }
   }
   async function closeBookmark(bookmark: Bookmark) {
     if (busy) return;
-    if (!native) {
+    if (!windowController.native) {
       error = "Open the desktop app to close tabs.";
       return;
     }
-    const current = generation;
+    const current = vaultController.generation;
     busy = true;
     error = "";
     try {
-      const outcome = await invoke<{browser_id: string; result: string; closed: number; note?: string}>("close_tab", {
+      const outcome = await invokeCommand("close_tab", {
         url: bookmark.url,
         browserId: bookmark.target_browser,
         bookmarkId: bookmark.id,
         bookmarkPrivate: !!bookmark.private,
       });
-      if (current === generation) {
+      if (current === vaultController.generation) {
         notice = outcome.closed > 0
           ? `Closed ${outcome.closed} tab${outcome.closed === 1 ? "" : "s"} in ${outcome.browser_id}`
           : (outcome.note ?? `No matching open tab in ${outcome.browser_id}`);
         // Refresh the open-tab inventory immediately so dots follow the close
         // instead of waiting for the next per-second poll.
-        try {
-          const status = await invoke<{
-            instances: InstanceDigest[];
-            error: string | null;
-          }>("companion_tabs_digest");
-          if (current === generation) {
-            applyDigest(status);
-          }
-        } catch {}
+        try { await companion.refresh(() => mounted && current === vaultController.generation); } catch {}
       }
     } catch (e) {
-      if (current === generation) error = String(e);
+      if (current === vaultController.generation) error = String(e);
     } finally {
-      if (current === generation) busy = false;
+      if (current === vaultController.generation) busy = false;
     }
   }
   async function keydown(e: KeyboardEvent) {
@@ -486,12 +413,12 @@
       clearPrivate(false);
       view = "search";
       openOnly = false;
-      expanded = false;
-      strip = false;
-      dockVisible = false;
-      if (native) {
-        try { await invoke("dock_escape"); }
-        catch (e) { dockVisible = true; expanded = true; error = String(e); }
+      windowController.expanded = false;
+      windowController.strip = false;
+      windowController.dockVisible = false;
+      if (windowController.native) {
+        try { await invokeCommand("dock_escape"); }
+        catch (e) { windowController.dockVisible = true; windowController.expanded = true; error = String(e); }
       }
       return;
     }
@@ -503,7 +430,7 @@
         return;
       }
     }
-    if (editing || editingGroup || view === "settings" || (view === "vault" && vault.locked))
+    if (bookmarkController.editing || bookmarkController.editingGroup || view === "settings" || (view === "vault" && vaultController.status.locked))
       return;
     if (!query.trim() && (e.key === "ArrowRight" || e.key === "ArrowLeft")) {
       const rowKey = (e.target as HTMLElement)?.closest?.('[data-vkey]')?.getAttribute('data-vkey');
@@ -514,7 +441,7 @@
     }
     if (e.key === "ArrowDown" || e.key === "ArrowUp") {
       e.preventDefault();
-      expanded = true;
+      windowController.expanded = true;
       const length = keyboardResults.length + (url ? 1 : 0);
       selected = length
         ? (selected + (e.key === "ArrowDown" ? 1 : -1) + length) % length
@@ -533,38 +460,18 @@
     }
   }
   function add() {
-    editing = {
-      id: entryId(),
-      title: "",
-      url: url ?? "",
-      target_browser: override ?? "firefox",
-      tags: [],
-      icon: "",
-      private: view === "vault",
-    };
-    expanded = true;
+    bookmarkController.addBookmark(url ?? "", override ?? "firefox", view === "vault");
+    windowController.expanded = true;
   }
   async function saveBookmark(bookmark: Bookmark) {
-    if (!native) throw "Open the desktop app to save bookmarks.";
-    const current = generation;
-    await invoke("save_bookmark", { bookmark, private: !!bookmark.private });
-    if (current !== generation) return;
-    editing = null;
-    if (bookmark.private) await loadPrivate();
-    else await loadPublic();
+    if (!windowController.native) throw "Open the desktop app to save bookmarks.";
+    await bookmarkController.saveBookmark(bookmark, bookmarkContext);
   }
   async function deleteBookmark() {
-    if (!editing) return;
-    const current = generation;
-    const privateItem = !!editing.private;
-    await invoke("delete_bookmark", { id: editing.id, private: privateItem });
-    if (current !== generation) return;
-    editing = null;
-    if (privateItem) await loadPrivate();
-    else await loadPublic();
+    await bookmarkController.deleteBookmark(bookmarkContext);
   }
   async function togglePin(bookmark: Bookmark) {
-    if (!native) {
+    if (!windowController.native) {
       error = "Open the desktop app to pin bookmarks.";
       return;
     }
@@ -576,96 +483,63 @@
     }
   }
   async function saveSettings(value: Settings) {
-    if (!native) throw "Open the desktop app to change settings.";
-    await sizeController.flush();
+    if (!windowController.native) throw "Open the desktop app to change settings.";
+    await windowController.size.flush();
     // Empty notice means everything — shortcuts included — is live already.
-    const outcome = await invoke<{ notice: string }>("save_settings", { settings: value });
-    settings = value;
-    previewTheme = null;
-    opacityPreview = null;
-    if (value.auto_hide) await invoke("dock_save_position", { snap: true });
+    const outcome = await invokeCommand("save_settings", { settings: value });
+    settingsController.commit(value);
+    if (value.auto_hide) await invokeCommand("dock_save_position", { snap: true });
     return outcome;
   }
   async function saveBrowser(browser: Browser) {
-    await invoke("save_browser", {browser}); await loadPublic();
+    await invokeCommand("save_browser", {browser}); await loadPublic();
   }
   async function redetectBrowsers() {
-    if (!native) throw "Open the desktop app to detect browsers.";
-    await invoke("redetect_browsers");
+    if (!windowController.native) throw "Open the desktop app to detect browsers.";
+    await invokeCommand("redetect_browsers");
     await loadPublic();
   }
   // Dirty settings are never dropped silently: first exit attempt arms (with
   // a toast), the second discards. Applies to Back, Esc, and tab switches.
   function requestLeave(): boolean {
-    if (view === "settings" && settingsDirty && !confirmBack) {
-      confirmBack = true;
-      notice = "Settings have unsaved changes — repeat to discard them.";
-      if (backTimer) clearTimeout(backTimer);
-      backTimer = setTimeout(() => (confirmBack = false), 4000);
-      return false;
-    }
-    if (backTimer) clearTimeout(backTimer);
-    confirmBack = false;
-    if (view === "settings" && settingsDirty) {
-      discardRequest++;
-      notice = "";
-    }
-    return true;
+    const result = settingsController.requestLeave(view === "settings");
+    if (result.notice !== null) notice = result.notice;
+    return result.allow;
   }
   function backFromSettings() {
     if (!requestLeave()) return;
-    editing = null;
-    editingGroup = null;
+    bookmarkController.editing = null;
+    bookmarkController.editingGroup = null;
     view = "search";
   }
   $effect(()=>{
-    const browserId=editing?.target_browser;
-    profileHints=[];
-    if(native && browserId) invoke<string[]>("browser_profiles",{browserId}).then(value=>{if(editing?.target_browser===browserId)profileHints=value}).catch(()=>{});
+    const browserId=bookmarkController.editing?.target_browser;
+    bookmarkController.profileHints=[];
+    if(windowController.native && browserId) invokeCommand("browser_profiles",{browserId}).then(value=>{if(bookmarkController.editing?.target_browser===browserId)bookmarkController.profileHints=value}).catch(()=>{});
   });
-  function addGroup(){ editingGroup={id:entryId(),name:"",color:"#b8edc9",sort_order:(view==="vault"?privateGroups:groups).length,collapsed:false,private:view==="vault"}; }
+  function addGroup(){ bookmarkController.addGroup(view === "vault", (view === "vault" ? vaultController.groups : bookmarkController.groups).length); }
   async function saveGroup(group:Group,close=true){
-    const current=generation;
-    if(!native)throw "Open the desktop app to save groups.";
-    await invoke("save_group",{group,private:!!group.private});
-    if(current!==generation)return;
-    if(close)editingGroup=null;
-    if(group.private)await loadPrivate();else await loadPublic();
+    if(!windowController.native)throw "Open the desktop app to save groups.";
+    await bookmarkController.saveGroup(group, bookmarkContext, close);
   }
   async function deleteGroup(){
-    if(!editingGroup)return;const group=editingGroup,current=generation;
-    await invoke("delete_group",{id:group.id,private:!!group.private});
-    if(current!==generation)return;editingGroup=null;
-    if(group.private)await loadPrivate();else await loadPublic();
+    await bookmarkController.deleteGroup(bookmarkContext);
   }
   async function reorderGroup(direction:number){
-    if(!editingGroup)return;const group=editingGroup;
-    const scope=[...(group.private?privateGroups:groups)].sort((a,b)=>a.sort_order-b.sort_order||a.id.localeCompare(b.id));
-    const index=scope.findIndex(g=>g.id===group.id),next=index+direction;
-    if(next<0||next>=scope.length)return;
-    await saveGroup({...group,sort_order:next},false);
-    editingGroup=(group.private?privateGroups:groups).find(g=>g.id===group.id)??null;
+    await bookmarkController.reorderGroup(direction, bookmarkContext);
   }
 
   async function move(id:string,groupId:string|null,index:number,privateScope:boolean,parentId?:string|null){
-    if(moving)return;const current=generation;
-    const before=privateScope?privateBookmarks:bookmarks;
-    moving=true;
-    try {
-      const next=moveBookmark(before,id,groupId,index,parentId);
-      if(privateScope)privateBookmarks=next;else bookmarks=next;
-      await invoke("move_bookmark",{id,groupId,index,private:privateScope,...(parentId===undefined?{}:{parentId})});
-    } catch(e){if(current===generation){if(privateScope)privateBookmarks=before;else bookmarks=before;error=String(e);}}
-    finally{moving=false;}
+    await bookmarkController.move(id, groupId, index, privateScope, bookmarkContext, parentId);
   }
   async function finishDrag(sequence = dragSequence) {
     if (!mounted || dragPolling) return;
     dragPolling = true;
     try {
       if (sequence !== dragSequence) return;
-      if (await invoke<boolean>("dock_drag_finished")) {
+      if (await invokeCommand("dock_drag_finished")) {
         if (sequence === dragSequence) {
-          await invoke("dock_save_position", { snap: settings.auto_hide });
+          await invokeCommand("dock_save_position", { snap: settingsController.settings.auto_hide });
         }
       } else {
         dragTimer = setTimeout(() => {
@@ -681,58 +555,58 @@
   }
   function enter() {
     if (hideTimer) clearTimeout(hideTimer);
-    if (strip) strip = false;
+    if (windowController.strip) windowController.strip = false;
     activity();
   }
   function leave() {
-    if (settings.auto_hide && !editing && !editingGroup && view === "search" && !query && !busy)
+    if (settingsController.settings.auto_hide && !bookmarkController.editing && !bookmarkController.editingGroup && view === "search" && !query && !busy)
       hideTimer = setTimeout(() => {
         if (
-          settings.auto_hide &&
-          !editing && !editingGroup &&
+          settingsController.settings.auto_hide &&
+          !bookmarkController.editing && !bookmarkController.editingGroup &&
           view === "search" &&
           !query &&
           !busy
         ) {
-          expanded = false;
-          strip = true;
+          windowController.expanded = false;
+          windowController.strip = true;
         }
       }, 800);
   }
   async function summon(showSettings = false) {
     if (hideTimer) clearTimeout(hideTimer);
-    strip = false;
-    dockVisible = true;
-    expanded = true;
+    windowController.strip = false;
+    windowController.dockVisible = true;
+    windowController.expanded = true;
     view = showSettings ? "settings" : "search";
-    editing = null;
-    editingGroup = null;
+    bookmarkController.editing = null;
+    bookmarkController.editingGroup = null;
     await tick();
     if (!showSettings) input?.focus();
-    if (native) {
+    if (windowController.native) {
       // Event entry points call `void summon()`; never let an IPC failure
       // escape as an unhandled rejection.
       try {
         await refreshVault();
-        if (!vault.locked) await loadPrivate();
+        if (!vaultController.status.locked) await loadPrivate();
       } catch (e) {
         error = String(e);
       }
     }
   }
   onMount(() => {
-    native = isTauri();
+    windowController.native = isTauri();
     mounted = true;
     const cleanups: (() => void)[] = [];
-    if (!native) {
-      ready = true;
+    if (!windowController.native) {
+      windowController.ready = true;
       return () => {
         mounted = false;
       };
     }
     let active = true;
-    const subscription = async (name: string, handler: () => void) => {
-      const unlisten = await listen(name, handler);
+    const subscription = async (name: "vault-locked" | "dock-summoned" | "show-settings", handler: () => void) => {
+      const unlisten = await listenDockEvent(name, handler);
       if (active) cleanups.push(unlisten);
       else unlisten();
     };
@@ -740,7 +614,7 @@
       try {
         await Promise.all([
           (async () => {
-            const unlisten = await listen<string>("dock-error", event => { error = event.payload; });
+            const unlisten = await listenDockEvent("dock-error", event => { error = event.payload; });
             if (active) cleanups.push(unlisten); else unlisten();
           })(),
           subscription("vault-locked", clearPrivate),
@@ -753,49 +627,22 @@
         ]);
         await loadPublic();
         await refreshVault();
-        ready = true;
+        windowController.ready = true;
       } catch (e) {
         error = String(e);
-        ready = true;
-        expanded = true;
+        windowController.ready = true;
+        windowController.expanded = true;
       }
     })();
-    let polling = false;
-    let pollTick = 0;
-    const timer = setInterval(async () => {
-      if (polling || !active) return;
-      polling = true;
-      try {
-        if (document.hidden || !dockVisible || strip) return;
-        // Vault state changes push via "vault-locked"; re-reading it every
-        // second only costs an IPC round-trip plus a filesystem stat.
-        pollTick++;
-        if (pollTick % 5 === 1) await refreshVault();
-        // Compact digest (parsed hosts) instead of full tab snapshots: the
-        // per-second payload drops from ~100s of KB to a few KB of JSON.
-        const status = await invoke<{
-          instances: InstanceDigest[];
-          error: string | null;
-        }>("companion_tabs_digest");
-        if (active) {
-          applyDigest(status);
-        }
-      } catch (e) {
-        if (active) companionError = String(e);
-      } finally {
-        polling = false;
-      }
-    }, 1000);
+    const stopPolling = companion.startPolling(() => active && !document.hidden && windowController.dockVisible && !windowController.strip, refreshVault);
     return () => {
       active = false;
       mounted = false;
-      generation++;
-      privateBookmarks = [];
-    privateGroups = [];
-    editingGroup = null;
-      clearInterval(timer);
+      vaultController.clear();
+      bookmarkController.clearPrivatePresentation();
+      stopPolling();
       if (hideTimer) clearTimeout(hideTimer);
-      if (backTimer) clearTimeout(backTimer);
+      settingsController.dispose();
       if (toastTimer) clearTimeout(toastTimer);
       if (routeTimer) clearTimeout(routeTimer);
       if (dragTimer) clearTimeout(dragTimer);
@@ -806,8 +653,8 @@
 
 <svelte:window onkeydown={keydown} onpointerdown={activity} />
 <!-- svelte-ignore a11y_no_static_element_interactions -->
-<main data-theme={previewTheme ?? settings.theme} style:--dock-opacity={opacityPreview ?? settings.opacity} class:expanded class:strip onmouseenter={enter} onmouseleave={leave}>
-  {#if strip}<button
+<main data-theme={settingsController.previewTheme ?? settingsController.settings.theme} style:--dock-opacity={settingsController.opacityPreview ?? settingsController.settings.opacity} style:--readability-fill={Math.min(0.78, Math.max(0, (1 - (settingsController.opacityPreview ?? settingsController.settings.opacity)) * 1.12))} class:expanded={windowController.expanded} class:strip={windowController.strip} onmouseenter={enter} onmouseleave={leave}>
+  {#if windowController.strip}<button
       class="wake-strip"
       onclick={() => summon()}
       aria-label="Expand BrowserDock"
@@ -819,7 +666,7 @@
         title="Drag dock"
         aria-label="Drag dock"
         onpointerdown={async (e) => {
-          if (native && e.button === 0) {
+          if (windowController.native && e.button === 0) {
             if (dragTimer) clearTimeout(dragTimer);
             dragSequence += 1;
             dragPolling = false;
@@ -835,7 +682,7 @@
         bind:value={query}
         bind:input
         onfocus={() => {
-          expanded = true;
+          windowController.expanded = true;
         }}
       />
       <div class="browser-chips">
@@ -850,28 +697,28 @@
       </div>
       <button
         class="icon-button vault-toggle"
-        class:unlocked={!vault.locked}
-        title={vault.locked ? "Open vault" : "Lock vault"}
-        aria-label={vault.locked ? "Open vault" : "Lock vault"}
+        class:unlocked={!vaultController.status.locked}
+        title={vaultController.status.locked ? "Open vault" : "Lock vault"}
+        aria-label={vaultController.status.locked ? "Open vault" : "Lock vault"}
         onclick={() => {
-          if (vault.locked) {
+          if (vaultController.status.locked) {
             view = "vault";
-            expanded = true;
+            windowController.expanded = true;
           } else void lock();
         }}
-        >{#if vault.locked}<LockKeyhole size={15} />{:else}<UnlockKeyhole
+        >{#if vaultController.status.locked}<LockKeyhole size={15} />{:else}<UnlockKeyhole
             size={15}
           />{/if}</button
       >
     </header>
-    {#if expanded}
+    {#if windowController.expanded}
       <div class="panel">
         <nav>
-          {#if editing || editingGroup || view === "settings"}<button
+          {#if bookmarkController.editing || bookmarkController.editingGroup || view === "settings"}<button
               class="back"
               onclick={backFromSettings}
-              title={view === "settings" && settingsDirty ? "Click again to discard unsaved changes" : "Back"}
-              >{#if view === "settings" && settingsDirty && confirmBack}Discard changes?{:else}<ChevronLeft size={14} /> Back{/if}</button
+              title={view === "settings" && settingsController.dirty ? "Click again to discard unsaved changes" : "Back"}
+              >{#if view === "settings" && settingsController.dirty && settingsController.confirmBack}Discard changes?{:else}<ChevronLeft size={14} /> Back{/if}</button
             >{:else}
             <div class="tabs">
               <button
@@ -881,14 +728,14 @@
               ><button
                 class:current={view === "vault"}
                 aria-pressed={view === "vault"}
-                title={vault.locked ? "Vault locked" : "Vault unlocked"}
+                title={vaultController.status.locked ? "Vault locked" : "Vault unlocked"}
                 onclick={() => (view = "vault")}
-                >Vault <span class="tab-dot" class:live={!vault.locked}
+                >Vault <span class="tab-dot" class:live={!vaultController.status.locked}
                 ></span></button
               >
             </div>{/if}
           <div class="nav-actions">
-            {#if !editing && !editingGroup && view !== "settings" && !(view === "vault" && vault.locked)}<button
+            {#if !bookmarkController.editing && !bookmarkController.editingGroup && view !== "settings" && !(view === "vault" && vaultController.status.locked)}<button
                 class="icon-button"
                 title="Add bookmark"
                 aria-label="Add bookmark"
@@ -899,8 +746,8 @@
               title="Settings"
               aria-label="Settings"
               onclick={() => {
-                editing = null;
-                editingGroup = null;
+                bookmarkController.editing = null;
+                bookmarkController.editingGroup = null;
                 view = "settings";
               }}><Settings2 size={14} /></button
             >
@@ -909,51 +756,51 @@
               title="Collapse dock"
               aria-label="Collapse dock"
               onclick={() => {
-                editing = null;
-                editingGroup = null;
-                expanded = false;
+                bookmarkController.editing = null;
+                bookmarkController.editingGroup = null;
+                windowController.expanded = false;
                 query = "";
               }}><ChevronUp size={14} /></button
             >
           </div>
         </nav>
         <div class="panel-content">
-          {#if !native}<p class="preview-notice">
+          {#if !windowController.native}<p class="preview-notice">
               Interface preview · Launch the desktop app to use bookmarks and
-              the vault.
+              the vaultController.status.
             </p>{/if}
-          {#if editingGroup}{#key editingGroup.id}<GroupEditor group={editingGroup} groups={(editingGroup.private?privateGroups:groups).toSorted((a,b)=>a.sort_order-b.sort_order||a.id.localeCompare(b.id))} onsave={saveGroup} ondelete={deleteGroup} oncancel={()=>editingGroup=null} onreorder={reorderGroup}/>{/key}
-          {:else if editing}{#key editing.id}<BookmarkEditor
-                bookmark={editing}
-                bookmarks={editing.private?privateBookmarks:bookmarks}
-                groups={editing.private?privateGroups:groups}
-                profiles={profileHints}
-                onprofiles={(browserId)=>native?invoke<string[]>("browser_profiles",{browserId}):Promise.resolve([])}
+          {#if bookmarkController.editingGroup}{#key bookmarkController.editingGroup.id}<GroupEditor group={bookmarkController.editingGroup} groups={(bookmarkController.editingGroup.private?vaultController.groups:bookmarkController.groups).toSorted((a,b)=>a.sort_order-b.sort_order||a.id.localeCompare(b.id))} onsave={saveGroup} ondelete={deleteGroup} oncancel={()=>bookmarkController.editingGroup=null} onreorder={reorderGroup}/>{/key}
+          {:else if bookmarkController.editing}{#key bookmarkController.editing.id}<BookmarkEditor
+                bookmark={bookmarkController.editing}
+                bookmarks={bookmarkController.editing.private?vaultController.bookmarks:bookmarkController.bookmarks}
+                groups={bookmarkController.editing.private?vaultController.groups:bookmarkController.groups}
+                profiles={bookmarkController.profileHints}
+                onprofiles={(browserId)=>windowController.native?invokeCommand("browser_profiles",{browserId}):Promise.resolve([])}
                 {browsers}
                 onsave={saveBookmark}
                 ondelete={deleteBookmark}
-                oncancel={() => (editing = null)}
+                oncancel={() => (bookmarkController.editing = null)}
               />{/key}
           {:else if view === "settings"}<SettingsView
-              {settings}
+              settings={settingsController.settings}
               {browsers}
-              {instances}
-              {companionError}
-              {native}
-              bind:dirty={settingsDirty}
-              bind:discardRequest
-              onsizepreview={sizeController.preview}
-              onsizecancel={sizeController.cancel}
+              instances={companion.instances}
+              companionError={companion.error}
+              native={windowController.native}
+              bind:dirty={settingsController.dirty}
+              bind:discardRequest={settingsController.discardRequest}
+              onsizepreview={windowController.size.preview}
+              onsizecancel={windowController.size.cancel}
               onbrowser={saveBrowser}
               onredetect={redetectBrowsers}
-              onprofiles={(browserId)=>native?invoke<string[]>("browser_profiles",{browserId}):Promise.resolve([])}
-              onpreviewtheme={(value)=>previewTheme=value}
-              onpreview={(value)=>opacityPreview=value}
+              onprofiles={(browserId)=>windowController.native?invokeCommand("browser_profiles",{browserId}):Promise.resolve([])}
+              onpreviewtheme={(value)=>settingsController.previewTheme=value}
+              onpreview={(value)=>settingsController.opacityPreview=value}
               onsave={saveSettings}
-              onsnap={() => invoke("dock_save_position", { snap: true })}
+              onsnap={() => invokeCommand("dock_save_position", { snap: true })}
             />
-          {:else if view === "vault" && vault.locked}<VaultModal
-              status={vault}
+          {:else if view === "vault" && vaultController.status.locked}<VaultModal
+              status={vaultController.status}
               onsubmit={authenticate}
             />
           {:else}
@@ -986,7 +833,7 @@
             <BookmarkList
               sections={sections}
               treeIndex={allTree.index}
-              {treeExpanded}
+              treeExpanded={bookmarkController.treeExpanded}
               ontoggletree={toggleTree}
               onopensubtree={openSubtree}
               activeKey={activeKey}
@@ -994,10 +841,10 @@
               groups={visibleGroups}
               {browsers}
               grouped={!query.trim()}
-              ongroup={(group)=>editingGroup={...group}}
+              ongroup={(group)=>bookmarkController.editingGroup={...group}}
               onopengroup={(group)=>groupAction(group)}
               onclosegroup={(group)=>groupAction(group,true)}
-              {instances}
+              instances={companion.instances}
               {busy}
               ontoggle={(group)=>saveGroup({...group,collapsed:!group.collapsed},false).catch(e=>error=String(e))}
               onmove={move}
@@ -1005,7 +852,7 @@
               onopen={open}
               onclose={closeBookmark}
               onpin={togglePin}
-              onedit={(bookmark) => (editing = { ...bookmark })}
+              onedit={(bookmark) => (bookmarkController.editing = { ...bookmark })}
             />
             {#if !results.length && !url}<div class="empty">
                 <span class="empty-symbol" aria-hidden="true"><Compass size={34} strokeWidth={1.3} /></span>
@@ -1039,11 +886,11 @@
         </div>
         <footer>
           <div class="footer-status">
-            <span class="connection-status" class:disconnected={ready && native && !instances.length}
-              title={companionError || (companionSummary ? `Tab inventory — ${companionSummary}.` : "Connect a companion to reuse open tabs. Links still open normally.")}>
-              <span class="connection-dot" class:connected={instances.length > 0} aria-hidden="true"></span>
-              <span>{!ready ? "Starting…" : !native ? "Preview" : instances.length
-                ? `${instances.length} companion${instances.length === 1 ? "" : "s"} connected`
+            <span class="connection-status" class:disconnected={windowController.ready && windowController.native && !companion.instances.length}
+              title={companion.error || (companionSummary ? `Tab inventory — ${companionSummary}.` : "Connect a companion to reuse open tabs. Links still open normally.")}>
+              <span class="connection-dot" class:connected={companion.instances.length > 0} aria-hidden="true"></span>
+              <span>{!windowController.ready ? "Starting…" : !windowController.native ? "Preview" : companion.instances.length
+                ? `${companion.instances.length} companion${companion.instances.length === 1 ? "" : "s"} connected`
                 : "No companions connected"}</span>
             </span>
             {#if override}<button class="override-clear" title="Clear browser override" aria-label="Clear browser override"
@@ -1057,7 +904,7 @@
       </div>
     {/if}
   {/if}
-  {#if !strip}<ResizeGrip size={settings.window_size} onpreview={sizeController.preview} oncommit={commitSize} oncancel={sizeController.cancel}/>{/if}
+  {#if !windowController.strip}<ResizeGrip size={settingsController.settings.window_size} onpreview={windowController.size.preview} oncommit={commitSize} oncancel={windowController.size.cancel}/>{/if}
 </main>
 
 <style>
@@ -1119,6 +966,7 @@
   .panel {
     position: relative;
     border-top: 1px solid #ffffff0c;
+    background: rgb(var(--surface-rgb) / var(--readability-fill, 0));
     display: flex;
     flex-direction: column;
     min-height: 0;
@@ -1174,7 +1022,7 @@
   .section-caption {
     display: flex;
     justify-content: space-between;
-    padding: 12px 8px 9px;
+    padding: 9px 8px 5px;
     font:
       9px "Cascadia Code",
       Consolas,

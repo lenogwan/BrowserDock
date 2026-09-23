@@ -5,18 +5,18 @@ description: Use when implementing, debugging or reviewing BrowserDock's Windows
 
 # BrowserDock engineering
 
-Maintain the existing implementation; phases 1–7 are complete. Read [PROGRESS.md](../../../PROGRESS.md), then relevant sections of [SPECIFICATION.md](../../../SPECIFICATION.md). Keep the Rust core/app separation, SvelteKit static SPA and locked dependency versions. Do not copy old scaffolding or introduce dependencies without need.
+Maintain the existing implementation. Read [PROGRESS.md](../../../PROGRESS.md) for current status and the relevant [SPECIFICATION.md](../../../SPECIFICATION.md) sections for contracts. Check current source and tests before following historical plans. Keep the Rust core/app separation and SvelteKit static SPA. Add dependencies only when the change needs them.
 
 ## Find the change
 
-| Area / original phase | Source | Contract and checks |
+| Area | Source | Contract and checks |
 | --- | --- | --- |
-| Build / 1 | `package.json`, `src-tauri/{Cargo.toml,tauri.conf.json}`, `scripts/` | [Installer guide](../../../docs/windows-installer.md); check affected build path |
-| Native dock / 2 | `src-tauri/src/{desktop,win32_helper,window_size,window_sizing}.rs` | SPEC §5; Rust/window tests, Windows compile and native acceptance |
-| Routing/config / 3 | `src-tauri/src/{config,settings,routing,detection,launcher}.rs` | SPEC §3.1; core tests |
-| Companion / 4–5 | `src-tauri/src/{ws_protocol,ws_server,dispatch}.rs`, `extension/src/`, `extension/build.mjs` | SPEC §4 and [companion guide](../../../extension/README.md); extension and core tests |
-| Vault / 6 | `src-tauri/src/{crypto,vault,session,runtime}.rs` | SPEC §3.2 and [security boundary](../../../docs/phase-6-7.md); crypto/session/core tests |
-| UI / 7 | `src/routes/+page.svelte`, `src/lib/`, `src/app.css` | SPEC §5; Svelte checks, UI tests and rendered smoke for interaction/layout changes |
+| Build | `package.json`, `src-tauri/{Cargo.toml,tauri.conf.json}`, `scripts/` | [Installer guide](../../../docs/windows-installer.md); check affected build path |
+| Native dock | `src-tauri/src/{desktop,win32_helper,window_size,window_sizing}.rs` | SPEC §5; Rust/window tests, Windows compile and native acceptance |
+| Routing/config | `src-tauri/src/{config,settings,routing,detection,launcher}.rs`, `src-tauri/src/commands/{routing,dispatch}.rs` | SPEC §3.1/§4.3; core tests and Windows app check |
+| Companion | `src-tauri/src/{ws_protocol,ws_server,dispatch}.rs`, `src-tauri/src/commands/{companion,pairing}.rs`, `extension/src/{protocol,inventory,actions,core}.js`, `extension/build.mjs` | SPEC §4 and [companion guide](../../../extension/README.md); extension and core tests |
+| Vault | `src-tauri/src/{crypto,vault,session,runtime}.rs` | SPEC §3.2 and [security boundary](../../../docs/phase-6-7.md); crypto/session/core tests |
+| UI | `src/routes/+page.svelte`, `src/lib/{features,platform,shared}/`, `src/app.css` | SPEC §5; Svelte checks, UI tests and rendered smoke for interaction/layout changes |
 
 ## Preserve these boundaries
 
@@ -35,6 +35,6 @@ Run from the repository root:
 - Rust changes: `cargo test --locked --manifest-path src-tauri/core/Cargo.toml`; formatting/Clippy for touched Rust, Windows app check for native integration.
 - UI changes: `npm run check`, `npm run test:ui`; `npm run build` for build integration. For rendered smoke setup, see [dock guide](../../../docs/phase-6-7.md).
 - Companion changes: rebuild, then `npm run test:extension`; run core/protocol tests for transport changes.
-- Docs/skills only: verify references, frontmatter, factual claims and identical skill copies; no application suites solely for prose changes.
+- Docs/skills only: verify references, frontmatter and factual claims; no application suites solely for prose changes.
 
-Do not overlap Svelte checks/build/smoke that mutate generated workspace files. Run full release checks for releases or changes spanning the system. Report unavailable native checks accurately. Update affected contracts/status and use `mirror-project` for every file-edit batch; keep all three project skill copies byte-identical.
+Do not overlap Svelte checks/build/smoke that mutate generated workspace files. Run full release checks for releases or changes spanning the system. Report unavailable native checks accurately. Update affected contracts and status. Keep the three discovery copies of this skill byte-identical. Follow [AGENTS.md](../../../AGENTS.md) for the repository's no-mirroring rule.

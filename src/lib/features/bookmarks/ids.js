@@ -8,7 +8,7 @@ export function entryId() {
   }
 }
 /** Stable render/identity key for a bookmark across public/private scopes. */
-/** @param {import('./types').Bookmark} bookmark */
+/** @param {import('../../shared/types').Bookmark} bookmark */
 export function entryKey(bookmark) {
   return `${bookmark.id}${bookmark.private ? "-private" : "-public"}`;
 }

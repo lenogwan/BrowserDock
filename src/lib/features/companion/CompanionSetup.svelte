@@ -1,7 +1,7 @@
 <script lang="ts">
-  import { invoke } from "@tauri-apps/api/core";
+  import { invokeCommand } from "../../platform/tauri/commands";
   import { revealItemInDir } from "@tauri-apps/plugin-opener";
-  import type { InstanceDigest } from "./types";
+  import type { InstanceDigest } from "../../shared/types";
 
   let {
     instances = [],
@@ -59,25 +59,25 @@
 
   async function copyCode(id: string) {
     await run(`copy-${id}`, async () => {
-      await invoke("pairing_copy", { browserId: id });
+      await invokeCommand("pairing_copy", { browserId: id });
       return `Pairing code for ${id} is on your clipboard. Paste it into the companion's Import box.`;
     });
   }
   async function openPage(id: string) {
     await run(`open-${id}`, async () => {
-      await invoke("pairing_open_page", { browserId: id });
+      await invokeCommand("pairing_open_page", { browserId: id });
     });
   }
   async function exportFiles() {
     await run("export", async () => {
-      const out = await invoke<{ dir: string; files: string[] }>("pairing_export");
+      const out = await invokeCommand("pairing_export");
       pairingDir = out.dir;
       return `Wrote ${out.files.length} pairing files. Import yours in the companion options page.`;
     });
   }
   async function stageCompanion() {
     await run("stage", async () => {
-      const out = await invoke<{ dir: string; flavors: string[] }>(
+      const out = await invokeCommand(
         "pairing_install_companion",
       );
       companionDir = out.dir;

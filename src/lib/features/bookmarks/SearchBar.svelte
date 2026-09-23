@@ -35,6 +35,9 @@
     min-width: 0;
     flex: 1;
     color: var(--muted);
+    background: rgb(var(--surface-rgb) / var(--readability-fill, 0));
+    border-radius: 12px;
+    padding: 0 7px;
   }
   .search-field :global(svg) {flex-shrink:0}
   .search-field:has(input:focus-visible) {

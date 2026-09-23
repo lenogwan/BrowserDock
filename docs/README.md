@@ -5,6 +5,7 @@ Start with [AGENTS](../AGENTS.md) and [current status](../PROGRESS.md). Load onl
 | Need | Read |
 | --- | --- |
 | Current architecture, data, protocol, UX | [SPECIFICATION](../SPECIFICATION.md), relevant sections |
+| Current source ownership after the refactor | [SPEC §6](../SPECIFICATION.md#6-codebase-reorganization), [verification](../PROGRESS.md#refactor-verification-2026-09-24) |
 | Development, daily use, pairing | [README](../README.md), [companion guide](../extension/README.md) |
 | Vault security and native dock acceptance | [Dock/vault guide](phase-6-7.md) |
 | Windows packaging and release checks | [Installer guide](windows-installer.md) |

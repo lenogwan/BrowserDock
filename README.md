@@ -179,4 +179,4 @@ cargo test --locked --manifest-path src-tauri/core/Cargo.toml  # Rust core tests
 | [`BUGS.md`](BUGS.md) | Historical bug audit and resolutions |
 | [`extension/README.md`](extension/README.md) | Companion install, pairing, behavior limits |
 | [`docs/phase-6-7.md`](docs/phase-6-7.md) | Dock and vault usage notes |
-| [`.agents/skills/browser-dock-builder/SKILL.md`](.agents/skills/browser-dock-builder/SKILL.md) | Implementation skill (mirrored in `.codex/` and `.opencode/` — keep the 3 copies in sync) |
+| [`.agents/skills/browser-dock-builder/SKILL.md`](.agents/skills/browser-dock-builder/SKILL.md) | Implementation skill, with identical discovery copies in `.codex/` and `.opencode/` |

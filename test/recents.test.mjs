@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { loadRecentMap, recordRecent, saveRecentMap, RECENT_CAP } from "../src/lib/recents.js";
+import { loadRecentMap, recordRecent, saveRecentMap, RECENT_CAP } from "../src/lib/features/bookmarks/recents.js";
 
 const mem = (initial) => {
   let store = { ...initial };

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { THEMES, normalizeTheme } from '../src/lib/themes.ts';
+import { THEMES, normalizeTheme } from '../src/lib/features/settings/themes.ts';
 test('theme normalization is tolerant and preserves supported themes', () => {
   for (const raw of [undefined, null, 'dark', 'neon', '', 42]) assert.equal(normalizeTheme(raw), 'sage');
   assert.equal(new Set(THEMES.map(t => t.id)).size, 5);

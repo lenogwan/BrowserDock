@@ -1,6 +1,6 @@
 <script lang="ts">
   import { untrack } from "svelte";
-  import type { Browser, InstanceDigest } from "./types";
+  import type { Browser, InstanceDigest } from "../../shared/types";
   let {
     browsers,
     instances = [],

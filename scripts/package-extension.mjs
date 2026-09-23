@@ -26,11 +26,11 @@ This zip is the human-readable source of the uploaded Gecko (.xpi) build.
 No minified or obfuscated code is used anywhere.
 
 Contents:
-  build.mjs          concatenates src/core.js + src/background.js into
-                     background.js, and src/core.js + src/options.js into
-                     options.js (stripping the leading "export " keywords),
-                     then writes both distributions plus manifests.
-  src/               authoritative source (background, core, options page)
+  build.mjs          concatenates protocol, inventory, actions, core and
+                     background source into background.js; protocol and the
+                     options source become options.js. It strips local ESM
+                     imports/exports and writes both distributions/manifests.
+  src/               authoritative source (modules and options page)
   test/              node:test suites run against src/ (no dependencies)
 
 Reproduce the uploaded build (requires Node.js 22+, no npm dependencies):

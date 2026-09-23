@@ -1,11 +1,11 @@
 import Fuse from "fuse.js";
-/** @typedef {import('./types').Bookmark & {group_name: string}} IndexedBookmark
+/** @typedef {import('../../shared/types').Bookmark & {group_name: string}} IndexedBookmark
  * @typedef {{items: IndexedBookmark[]; fuse: import('fuse.js').default<IndexedBookmark>}} BookmarkIndex */
 const indexCache = /** @type {WeakMap<object, WeakMap<object, BookmarkIndex>>} */ (new WeakMap());
 /** Build (and memoize) a Fuse index for an exact bookmarks/groups array pair.
  * Component `$derived` arrays keep identity across renders, so per-keystroke
  * searches reuse the index and only pay for the query itself. */
-/** @param {import('./types').Bookmark[]} bookmarks @param {import('./types').Group[]} groups @returns {BookmarkIndex} */
+/** @param {import('../../shared/types').Bookmark[]} bookmarks @param {import('../../shared/types').Group[]} groups @returns {BookmarkIndex} */
 export function createBookmarkIndex(bookmarks, groups = []) {
   let byGroups = indexCache.get(bookmarks);
   if (!byGroups) { byGroups = new WeakMap(); indexCache.set(bookmarks, byGroups); }
@@ -25,7 +25,7 @@ export function createBookmarkIndex(bookmarks, groups = []) {
   }
   return entry;
 }
-/** @param {import('./types').Bookmark[]} bookmarks @param {string} query @param {import("./types").Group[]} groups */
+/** @param {import('../../shared/types').Bookmark[]} bookmarks @param {string} query @param {import("../../shared/types").Group[]} groups */
 export function searchBookmarks(bookmarks, query, groups = []) {
   if (!query.trim()) return bookmarks;
   return createBookmarkIndex(bookmarks, groups).fuse.search(query.trim()).map((result) => result.item);
@@ -52,7 +52,7 @@ export function directUrl(value) {
     return null;
   }
 }
-/** @param {import('./types').Bookmark} bookmark @param {import('./types').Instance[]} instances */
+/** @param {import('../../shared/types').Bookmark} bookmark @param {import('../../shared/types').Instance[]} instances */
 export function openInBrowser(bookmark, instances) {
   try {
     const host = new URL(bookmark.url).hostname.toLowerCase();
@@ -142,7 +142,7 @@ export function buildOpenTabIndex(instances) {
   return { base, stored };
 }
 /** O(1) open-indicator check against a prebuilt index. Same semantics as openInBrowser. */
-/** @param {import('./types').Bookmark} bookmark @param {OpenTabIndex} index */
+/** @param {import('../../shared/types').Bookmark} bookmark @param {OpenTabIndex} index */
 export function isTabOpen(bookmark, index) {
   let host;
   try { host = new URL(bookmark.url).hostname.toLowerCase(); } catch { return false; }
@@ -152,21 +152,21 @@ export function isTabOpen(bookmark, index) {
   return index.stored.has(`${key}	${container}`);
 }
 /** Stable partition: open tabs first, preserving relative order. */
-/** @param {import('./types').Bookmark[]} items @param {OpenTabIndex} index */
+/** @param {import('../../shared/types').Bookmark[]} items @param {OpenTabIndex} index */
 export function openFirst(items, index) {
   if (!index) return items;
-  const open = /** @type {import('./types').Bookmark[]} */ ([]);
-  const rest = /** @type {import('./types').Bookmark[]} */ ([]);
+  const open = /** @type {import('../../shared/types').Bookmark[]} */ ([]);
+  const rest = /** @type {import('../../shared/types').Bookmark[]} */ ([]);
   for (const item of items) (isTabOpen(item, index) ? open : rest).push(item);
   return [...open, ...rest];
 }
 /** Stable partition: pinned bookmarks first, preserving relative order. */
-/** @param {import('./types').Bookmark[]} items */
+/** @param {import('../../shared/types').Bookmark[]} items */
 export function pinnedFirst(items) {
   return [...items.filter((b) => b.pinned), ...items.filter((b) => !b.pinned)];
 }
 /** Stable partition: recently opened first (most recent first); never-opened keep order at the end. */
-/** @param {import('./types').Bookmark[]} items @param {Map<string, number>} [recent] */
+/** @param {import('../../shared/types').Bookmark[]} items @param {Map<string, number>} [recent] */
 export function recentFirst(items, recent) {
   if (!recent) return items;
   /** @param {string} id @returns {number} */
@@ -178,7 +178,7 @@ export function recentFirst(items, recent) {
 /** Combined result ranking for massive lists: open → pinned → recent.
  * Each step is a stable partition, so lower-priority orders survive inside
  * higher-priority blocks (e.g. open items stay pin/recency ordered). */
-/** @param {import('./types').Bookmark[]} items @param {OpenTabIndex} index @param {Map<string, number>} [recent] */
+/** @param {import('../../shared/types').Bookmark[]} items @param {OpenTabIndex} index @param {Map<string, number>} [recent] */
 export function rankResults(items, index, recent) {
   return openFirst(pinnedFirst(recentFirst(items, recent)), index);
 }

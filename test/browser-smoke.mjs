@@ -221,7 +221,7 @@ try {
   }
   await page.setViewportSize({width:400,height:560});
   await page.keyboard.press('Tab');
-  for(const selector of ['.icon-button','.browser-badge','.group-title','.result-main']) {
+  for(const selector of ['.icon-button','.browser-badge','.group-title','.row-open']) {
     const control=page.locator(selector).first();
     await control.focus();
     assert.equal(await control.evaluate(el=>el.matches(':focus-visible')),true);
@@ -327,9 +327,10 @@ try {
   const opacity=page.getByRole("slider");
   await opacity.fill("0.45");
   assert.equal(await page.locator("main").evaluate(el=>el.style.getPropertyValue("--dock-opacity")),"0.45");
-  await page.getByLabel("Hide after opening").uncheck();
   await page.getByLabel("Auto-hide").check();
-  await page.getByRole("button", { name: "Save settings" }).click();
+  await page.getByRole("tab", { name: "Behavior" }).click();
+  await page.getByLabel("Hide after opening link").uncheck();
+  await page.getByRole("button", { name: "Save", exact: true }).click();
   await page.waitForFunction(()=>window.testState.settings.opacity===0.45);
   assert.equal(await page.evaluate(()=>window.testState.settings.hide_on_open),false);
   await page.getByRole("button", { name: "Back", exact: true }).click();
@@ -344,7 +345,8 @@ try {
   assert.equal(await page.evaluate(()=>window.testState.publicItems.find(b=>b.id==='github').group_id), undefined);
   await page.evaluate(()=>window.testState.failMove=false);
   await github.dragTo(work);
-  await work.getByRole("button",{name:"Open GitHub in firefox"}).waitFor();
+  await page.waitForFunction(()=>window.testState.publicItems.find(b=>b.id==='github').group_id==='work');
+  await page.getByRole("button",{name:"Open GitHub in firefox"}).waitFor();
   await page.getByRole("button",{name:"Edit GitHub",exact:true}).click();
   await page.getByLabel("Group",{exact:true}).selectOption("");
   await page.getByRole("button",{name:"Save bookmark",exact:true}).click();
@@ -362,19 +364,18 @@ try {
   await page.screenshot({ path: "/tmp/browserdock-dock.png" });
   await page.getByRole("button", { name: "Vault", exact: true }).click();
   await page.screenshot({ path: "/tmp/browserdock-vault.png" });
-  // Numeric settings preview is discarded on navigation, and Save persists both modes.
+  // Manual-height preview is discarded on navigation, while Save persists it.
   await page.getByRole('button',{name:'Settings',exact:true}).click();
-  await page.getByRole('spinbutton',{name:'Window width',exact:true}).fill('620');
-  await page.waitForFunction(()=>window.testState.pendingSize?.width===620);
-  assert.equal(await page.evaluate(()=>window.testState.settings.window_size.width),400);
-  await page.getByRole('button',{name:'Back',exact:true}).click();
-  await page.waitForFunction(()=>window.testState.pendingSize?.width===400);
-  await page.getByRole('button',{name:'Settings',exact:true}).click();
-  await page.getByRole('spinbutton',{name:'Window width',exact:true}).fill('620');
   await page.getByLabel('Automatic height').uncheck();
-  await page.getByRole('spinbutton',{name:'Window height',exact:true}).fill('480');
-  await page.getByRole('button',{name:'Save settings',exact:true}).click();
-  await page.waitForFunction(()=>window.testState.settings.window_size.height===480);
+  await page.waitForFunction(()=>window.testState.pendingSize?.height!==null);
+  assert.equal(await page.evaluate(()=>window.testState.settings.window_size.height),null);
+  await page.getByRole('button',{name:'Back',exact:true}).click();
+  await page.getByRole('button',{name:'Discard changes?',exact:true}).click();
+  await page.waitForFunction(()=>window.testState.pendingSize?.height===null);
+  await page.getByRole('button',{name:'Settings',exact:true}).click();
+  await page.getByLabel('Automatic height').uncheck();
+  await page.getByRole('button',{name:'Save',exact:true}).click();
+  await page.waitForFunction(()=>window.testState.settings.window_size.height!==null);
   await page.getByRole('button',{name:'Back',exact:true}).click();
   await page.getByRole('button',{name:'Resize dock',exact:true}).dblclick();
   await page.waitForFunction(()=>window.testState.settings.window_size.width===400&&window.testState.settings.window_size.height===null);

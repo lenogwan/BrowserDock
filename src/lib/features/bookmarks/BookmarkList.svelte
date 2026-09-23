@@ -7,7 +7,7 @@
   import { isTabOpen } from "./search.js";
   import { browserGroupFor, hasBrowserGroup, groupColor } from "./tab-groups.js";
   import { entryKey } from "./ids.js";
-  import type { Bookmark, Group, Browser, InstanceDigest } from "./types";
+  import type { Bookmark, Group, Browser, InstanceDigest } from "../../shared/types";
   type Section = { group: Group | null; private: boolean; items: Bookmark[]; roots?: TreeNode[] };
   // Flat render node: headers carry no item, rows carry no header flag.
   // A single shape avoids fragile template type-narrowing.
@@ -372,7 +372,7 @@
   @media (max-width:340px) {.monogram {width:20px!important;height:20px!important}.result-main {gap:4px!important;padding:6px 2px!important}}
 
   .native-group {border:1px solid currentColor;border-radius:4px;padding:0 4px;width:fit-content;max-width:100%;font-size:9px;}
-  .group-header { display:flex; align-items:center; margin:9px 0 3px; }
+  .group-header { display:flex; align-items:center; margin:4px 0 1px; }
   .group-title {display:flex;align-items:center;gap:6px;flex:1;min-width:0;background:none;color:var(--muted);font-size:11px;padding:6px;text-align:left}
   .group-name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-transform:uppercase;letter-spacing:1px;font-size:10px}
   .group-title small{margin-left:auto;flex-shrink:0;background:#ffffff10;border-radius:8px;padding:1px 7px;font-size:9px}

@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { entryId } from "../src/lib/ids.js";
+import { entryId } from "../src/lib/features/bookmarks/ids.js";
 
 test("entry creation survives unavailable UUID APIs without repeated IDs", () => {
   const descriptor = Object.getOwnPropertyDescriptor(globalThis, "crypto");

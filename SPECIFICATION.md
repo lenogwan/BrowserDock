@@ -11,7 +11,7 @@
 
 ### 1.1 Why Tauri v2 + Svelte 5 + Rust?
 Running 4 web browsers simultaneously (Firefox, Mullvad, Chrome, Edge) consumes gigabytes of memory. An always-on-top launcher must **never** be an Electron app (~200MB+ RAM overhead).
-* **Memory target:** Under 40 MB for the release app; measure on native Windows and state whether WebView2 child processes are included. This is a target, not a verified result.
+* **Memory target:** Under 40 MB for the release app; measure on native Windows and state whether WebView2 child processes are included. This is a target, not a verified result. See [PROGRESS.md](PROGRESS.md) for acceptance status.
 * **Native Windows Integration:** Rust provides direct access to Win32 APIs (`windows-rs`) for `SetForegroundWindow`, `BringWindowToTop`, registry querying for browser paths, and global hotkeys.
 * **Security & Crypto:** The Rust implementation uses `aes-gcm` and `argon2`; see §3.2 and the [vault security boundary](docs/phase-6-7.md#storage-and-security-boundary).
 * **Reactive Frontend:** Svelte 5 with Tailwind v3; target responsive interaction and verify performance on Windows.
@@ -371,7 +371,7 @@ Existing command names remain available. Tauri JavaScript arguments use camelCas
 
 `auto_tab_groups` defaults to true, including for older configs. Individual grouped bookmarks pass their stored group hint when enabled. Settings → Behavior can disable automatic grouping; explicit group actions remain available. Group headers provide Open Group in Browser and, when matching native group inventory exists, Close Group Tabs. Bookmark rows show a title/color badge from browser inventory using the existing host/container indicator semantics.
 
-Settings provides a 30–100% background-opacity slider in 5% steps, with an unsaved live preview. Save persists it; cancel discards the preview. Text and borders keep their opacity, and reduced-motion users see instant changes.
+Settings provides a 30–100% background-opacity slider in 5% steps, with an unsaved live preview. Save persists it; cancel discards the preview. Text and borders keep their opacity. At lower opacity, the expanded panel and search field gain a background fill to keep content readable over busy desktop windows; the outer dock still follows the selected opacity. Reduced-motion users see instant changes.
 
 Settings → Appearance offers Sage Mint, Nord Frost, Midnight Amber, Tokyo Violet and Rosé Pine through keyboard-accessible radio cards. Theme selection previews immediately throughout the dock; Save persists it, and Discard or leaving after discarding restores the committed theme. CSS tokens control surfaces, text and accents without remote assets or runtime dependencies. Token contrast is checked against opaque base surfaces; arbitrary desktop backgrounds at reduced opacity require visual acceptance.
 
@@ -392,24 +392,39 @@ BookmarkEditor offers contextual profile/container inputs and a private/incognit
 
 ---
 
-## 6. Original roadmap (implemented)
+## 6. Codebase reorganization
 
-See [PROGRESS.md](PROGRESS.md) for current status and remaining native validation. These milestones describe the initial build, not pending work.
+The source layout described here was implemented on 2026-09-24. The existing schemas, IPC commands and messages, keyboard interactions, vault lifecycle, build artifacts and release targets in §§1–5 remain authoritative. The final native Windows acceptance gate remains open; see [PROGRESS](PROGRESS.md#refactor-verification-2026-09-24). No runtime dependency was added for organization.
 
-1. **Milestone 1: Tauri Project Setup & Native Window Controls**
-   * Tauri v2 initialization with Svelte 5 and Tailwind CSS.
-   * Configure borderless window, always-on-top flags, and Win32 drag-region.
-2. **Milestone 2: Configuration & Process Launcher**
-   * Implement `config.json` reader/writer.
-   * Auto-detect default browser paths from Windows Registry (`HKEY_LOCAL_MACHINE\SOFTWARE\Clients\StartMenuInternet`).
-   * Implement CLI launcher with fallback execution.
-3. **Milestone 3: Companion WebExtension & WebSocket IPC**
-   * Build cross-browser WebExtension (Chromium MV3 build for Chrome/Edge + Gecko-compatible build for Firefox/Mullvad; two manifest variants — never one manifest with both `service_worker` and `scripts`).
-   * Implement Rust embedded WebSocket server on `127.0.0.1:{ws_port}` (default `49222`, with next-free-port fallback).
-   * Registry keyed by per-connection `instance_id` (not bare `browser_id`); enforce `AUTH` token; implement `FOCUS_OR_OPEN` command and window foregrounding via Win32 best-effort sequence (`AttachThreadInput` workaround).
-4. **Milestone 4: Private Vault & Crypto Engine**
-   * Implement Argon2id + AES-256-GCM encryption in Rust.
-   * Implement auto-lock countdown and panic key listener.
-5. **Milestone 5: Polish & Distribution**
-   * System tray integration (Show/Hide, Lock Vault, Settings, Exit).
-   * Windows `.msi` and portable `.exe` bundle generation.
+### 6.1 Target boundaries
+
+Keep the SvelteKit application at the repository root. `src/routes` remains the route entry, `src-tauri` remains the Tauri application and independently testable Rust core, and `extension` remains the companion source and its Chromium/Gecko outputs. A top-level `browserdock-ui/` package would add build, lockfile and Tauri path changes without creating a useful ownership boundary for the current single UI. Reconsider a separate package only if the UI gains an independent build or release lifecycle.
+
+Within `src/lib`, files are grouped by feature. This is the current ownership layout:
+
+```text
+src/
+  routes/+page.svelte             # dock composition and route entry
+  lib/
+    features/
+      dock/                       # window state and resize coordination
+      bookmarks/                  # list, editors, search, trees and groups
+      browsers/                   # browser selection and routing presentation
+      vault/                      # unlock UI and private session presentation
+      settings/                   # settings and appearance
+      companion/                  # connection status and setup
+    platform/tauri/               # typed desktop commands and event subscriptions
+    shared/                       # genuinely shared UI, types and pure utilities
+```
+
+Feature code owns its components, controller state and pure helpers. `shared` holds types used across features. The route composes features and coordinates cross-feature actions, keyboard interactions and dock visibility. The platform layer owns Tauri IPC naming, argument and response types; it does not implement product rules or persist private data. Rust core keeps routing, config, vault and protocol rules independent of the Tauri shell. Tauri shell commands are under `src-tauri/src/commands/`. Extension protocol, inventory, browser actions and connection logic are separate source modules; Chromium and Gecko distributions remain generated from shared source.
+
+### 6.2 Phases and completion gates
+
+1. **Baseline and dependency map.** Record the current import and command/event paths for the dock, Rust shell/core and extension build. Identify which state owns public versus private data, startup/summon, searches, opens and companion polling. Capture the existing targeted check commands and native acceptance gaps in PROGRESS. Gate: each planned move has an owner and a relevant check; no runtime code changes.
+2. **Frontend feature folders.** Move related Svelte components and pure helpers from the flat `src/lib` into feature folders, with colocated tests where useful. Update imports without changing state ownership, DOM behavior or Tauri calls. Keep `src/routes/+page.svelte` as the entry. Gate: Svelte check, UI tests, production build and rendered 280/400/800 px interaction smoke pass; keyboard, drag, search, vault and opacity behavior remain the same.
+3. **Typed desktop boundary.** Place frontend `invoke` and `listen` access behind small typed command/event modules. Preserve command names, camelCase arguments, result/error handling and subscription cleanup from §4.3. Keep companion WebSocket traffic in Rust and the extensions. Gate: desktop mocks and relevant core transport tests prove the same requests, responses and failure behavior; no dispatched mutation gains an automatic retry.
+4. **Dock state and route decomposition.** Extract coherent bookmark, vault, settings, companion and window controllers from `+page.svelte`; leave the route responsible for composition and cross-feature actions. Give private state a single explicit lock/clear path and guard stale asynchronous results. Preserve keyboard focus, selection, visibility, resize and notification timing. Gate: UI tests and rendered smoke cover ordinary and private flows, failed operations, narrow/wide layouts and cleanup after hide or lock.
+5. **Rust application modules.** Split oversized Tauri shell modules by command and lifecycle responsibility, while retaining `src-tauri/core` as a testable library. Preserve command registration, session gates, atomic writes, launch argument validation and public IPC shapes. Gate: core tests, touched Rust formatting/Clippy and a relevant Windows-target app check pass; native-only behavior remains explicitly pending until tested on Windows.
+6. **Companion source modules.** Split extension source by protocol, inventory and browser actions without changing authenticated loopback transport, message bounds, private-tab opt-in or mutation deadlines. Keep the Chromium and Gecko builds generated from shared source. Gate: extension rebuild/tests and relevant Rust protocol integration checks pass; both generated distributions are included and real-browser acceptance gaps are recorded.
+7. **Integration and cleanup.** Remove obsolete imports and duplicate helpers only after callers move; update source-path references in docs, scripts and CI. Re-run full frontend, Rust and extension checks plus rendered smoke. Finish native Windows acceptance for foregrounding, tray, DPI, browser profiles/containers/private windows, memory and installer behavior before claiming release readiness. Gate: PROGRESS records actual results and limitations, and §§1–5 still match the implementation.

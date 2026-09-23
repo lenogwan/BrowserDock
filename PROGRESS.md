@@ -1,6 +1,6 @@
 # BrowserDock current status
 
-Current implementation updated 2026-09-22 for nested bookmarks and five-theme settings. Earlier records below remain historical evidence.
+Current implementation updated 2026-09-24 for the codebase reorganization. Earlier records below remain historical evidence.
 
 ## Implemented
 
@@ -13,11 +13,36 @@ Current implementation updated 2026-09-22 for nested bookmarks and five-theme se
 - Cold-start group/subtree open (2026-09-22): ungroupable open batches launch one process per argv chunk with every URL as trailing arguments, then wait bounded (~10 s) for the browser's companion and regroup natively; background-only Edge hands off pre-mutation and focus/group errors name the companion result code. Rust suites for this change still need a Windows run (no toolchain in the Linux sandbox).
 - Nested bookmarks: root/child/grandchild trees, validated same-scope parent editing and drag nesting, sibling order, delete/reparent, expansion memory with private cleanup, and explicit subtree opening through the guarded group dispatcher. Normal opening remains one URL; subtree opening allows 50 URLs including the parent. See [implementation plan](docs/deep-groups-plan.md) and SPEC §3.1/§4.3/§5.2.
 - Appearance: Sage Mint, Nord Frost, Midnight Amber, Tokyo Violet and Rosé Pine, with immediate preview, save/discard, legacy `dark` fallback and shared CSS tokens. See [implementation plan](docs/theme-settings-plan.md) and SPEC §3.1/§5.2.
+- UI readability (2026-09-24): the expanded panel and search field gain a background fill as dock opacity drops, while group headings sit closer to their rows. The opacity preview explains this behavior; see SPEC §5.2.
+- Codebase reorganization (2026-09-24): Svelte components and helpers live in feature folders, desktop IPC in typed command/event modules, and route state in bookmark, vault, settings, companion and window controllers. Tauri shell commands live under `src-tauri/src/commands/`; extension protocol, inventory, actions and connection source are separate and both browser distributions were rebuilt. IPC names, storage formats and extension message shapes remain unchanged. See SPEC §6.
 - Windows packaging: EXE/MSI build automation, bundled companion resources and pairing helpers. See [installer guide](docs/windows-installer.md).
 
 ## Remaining acceptance and limitations
 
+The code changes in [SPEC §6](SPECIFICATION.md#6-codebase-reorganization) are implemented. Native Windows acceptance in phase 7 remains pending, so the refactor is not release-accepted. The dependency map below records the phase 1 baseline.
+
+### Refactor baseline (2026-09-24)
+
+| Area | Before refactor | Implemented owner/check |
+| --- | --- | --- |
+| Public bookmarks, groups, settings and browsers | `+page.svelte` loads and saves through Tauri commands; Rust `lib.rs` and `runtime.rs` read/write the config | Frontend feature folders, typed IPC, route controllers; Svelte check, UI tests, build and rendered smoke |
+| Private bookmarks, groups and vault status | `+page.svelte` keeps separate arrays and generation guards; Rust `runtime.rs` owns the session gate and vault | Vault controller and Rust command modules; private-flow smoke and core session tests |
+| Startup, summon, hide, resize and keyboard focus | `+page.svelte`, Rust `desktop.rs`, `runtime.rs` and `window_sizing.rs` | Dock controller and shell modules; rendered smoke, Windows target check and native acceptance |
+| Search, tree order and opens | `src/lib/search.js`, `trees.js`, `groups.js`, `+page.svelte`; Rust `lib.rs` dispatches through core routing/dispatch | Bookmark feature and typed commands; UI/core tests and smoke |
+| Companion polling and events | `+page.svelte` invokes `companion_tabs_digest` every second and listens for four Tauri events; Rust `ws_server.rs` owns loopback transport | Companion controller, typed events, shell commands; UI mocks and core transport tests |
+| Extension source/build | `extension/src/core.js` plus `background.js`/`options.js`; `extension/build.mjs` concatenates classic scripts into Chromium/Gecko distributions | Source modules; rebuild, extension tests and Rust protocol tests |
+
+Native Windows foregrounding, tray, DPI, browser profiles/containers/private windows, memory and installer behavior remain acceptance gaps. Relevant commands are `npm run check`, `npm run test:ui`, `npm run build`, rendered smoke with Playwright, `cargo test --locked --manifest-path src-tauri/core/Cargo.toml`, Windows-target app check, `npm run build:extension` and `npm run test:extension`.
+
+### Refactor verification (2026-09-24)
+
+- Passed: Svelte check (zero diagnostics), 27 UI tests, production frontend build, all three rendered smokes (`browser-smoke`, `tab-groups-smoke`, `deep-groups-themes-smoke`), 86 Rust core tests including live JS/Rust transport, Windows MSVC-target app check, touched Rust formatting check, extension rebuild and 90 extension tests.
+- Windows-target app Clippy completed with one warning in untouched `runtime.rs` (`needless_borrows_for_generic_args`). The browser smoke was updated to target the actual focusable row button, current Settings tabs and resize controls, and the flat virtualized list; it now passes.
+- Rendered smokes use mocked desktop IPC. Cross-compilation does not verify native foregrounding, tray, DPI, browser profiles/containers/private windows, memory or installer behavior. No native Windows acceptance or memory measurement was performed.
+
 Native Windows checks remain required before release: real browser/profile/container/private-window behavior, foregrounding/minimized windows, shortcuts/panic timing, tray failures, drag/resize/DPI/multi-monitor behavior, memory target and clean install/upgrade/uninstall. See [dock checklist](docs/phase-6-7.md#native-windows-acceptance), [companion checklist](extension/README.md#manual-windows-validation) and [release checklist](docs/windows-installer.md#release-validation).
+
+The 2026-09-24 readability change passed Svelte check, 27 UI tests, production build and the rendered nested-bookmark/theme smoke at 280–800px, including the 30% opacity surface check. Desktop IPC was mocked; contrast over arbitrary desktop windows and native Windows rendering still need visual acceptance.
 
 Chromium companion profile hints do not enforce a profile. Pairing tokens are plaintext bearer credentials protected by user ACLs; DPAPI wrapping is a follow-up. The vault does not protect browser history/process memory or copied ciphertext against offline guessing. See SPEC §3–4 and the dock security boundary.
 

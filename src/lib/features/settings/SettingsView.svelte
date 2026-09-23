@@ -1,10 +1,10 @@
 <script lang="ts">
   import { onDestroy, untrack } from "svelte";
-  import BrowserPanel from "./BrowserPanel.svelte";
-  import CompanionSetup from "./CompanionSetup.svelte";
+  import BrowserPanel from "../browsers/BrowserPanel.svelte";
+  import CompanionSetup from "../companion/CompanionSetup.svelte";
   import ShortcutRecorder from "./ShortcutRecorder.svelte";
   import { THEMES } from "./themes";
-  import type { ThemeId, Settings, Browser, WindowSize, InstanceDigest } from "./types";
+  import type { ThemeId, Settings, Browser, WindowSize, InstanceDigest } from "../../shared/types";
 
   type Tab = "appearance" | "behavior" | "browsers" | "companion";
   const TABS: { id: Tab; label: string }[] = [
@@ -196,6 +196,7 @@
           oninput={(e) => onpreview(Number(e.currentTarget.value))}
         /></label
       >
+      <p class="muted">The bookmark panel stays readable over busy backgrounds at lower opacity.</p>
       <fieldset class="window-size">
         <legend>Window size</legend>
         <p class="size-readout" role="status">

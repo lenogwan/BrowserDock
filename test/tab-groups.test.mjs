@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { browserGroupFor, hasBrowserGroup, groupColor } from '../src/lib/tab-groups.js';
+import { browserGroupFor, hasBrowserGroup, groupColor } from '../src/lib/features/bookmarks/tab-groups.js';
 const bookmark = {url:'https://one.test/', target_browser:'firefox', browser_options:{container:'Work'}};
 const instances = [{browser:'firefox',containers:[{name:'Work',cookieStoreId:'firefox-container-1'}],tabs:[{host:'one.test',cookieStoreId:'firefox-container-1',groupTitle:'Research',groupColor:'blue'}]}];
 test('native group badges resolve containers and browser defaults', () => {

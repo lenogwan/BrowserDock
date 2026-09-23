@@ -490,10 +490,6 @@ npm run test:ui
 3. Documentation & Status updates:
    * Update [SPECIFICATION.md](../SPECIFICATION.md) §3.1 settings schema to record all 5 theme values and `"sage"` default.
    * Update [PROGRESS.md](../PROGRESS.md) to record the completed theme setting feature and verification counts.
-4. Project Mirroring:
-   * Mirror all created/updated project files to `/mnt/d/Gemini` following [mirror-project](../.agents/skills/mirror-project/SKILL.md).
-   * Verify byte-for-byte equality with `cmp`.
-
 ---
 
 ## 5. Invariants & Acceptance Criteria Checklist

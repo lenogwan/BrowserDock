@@ -3,21 +3,27 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { join, resolve } from 'node:path';
 
 const root = fileURLToPath(new URL('.', import.meta.url));
-// Strip ESM declaration exports for the concatenated classic-script build.
-// Only `export <declaration>` forms are supported; anything else (default
-// exports, export lists, re-exports) fails loudly instead of shipping broken
-// code that silently shares one scope.
-function stripExports(source, file) {
+// Source modules use local named imports for Node tests. The extension build
+// concatenates them in dependency order into classic scripts for MV3/Gecko.
+function stripModuleSyntax(source, file) {
   if (/^\s*export\s+(default|\{|\*)/m.test(source)) {
     throw new Error(`${file}: unsupported export form (only "export <declaration>" is supported)`);
   }
-  return source.replace(/^export (?=(?:async\s+)?(?:function|class|const|let|var)\b)/gm, '');
+  const imports = [...source.matchAll(/^import\s+[^\n]+/gm)];
+  for (const [statement] of imports) {
+    if (!/^import\s+\{[^}]+\}\s+from\s+['"]\.\/[a-z-]+\.js['"];?$/.test(statement)) {
+      throw new Error(`${file}: unsupported import form`);
+    }
+  }
+  return source.replace(/^import\s+[^\n]+\n/gm, '').replace(/^export (?=(?:async\s+)?(?:function|class|const|let|var)\b)/gm, '');
 }
 export async function build(output = root) {
-  const coreRaw = await readFile(join(root, 'src/core.js'), 'utf8');
-  const source = stripExports(coreRaw, 'src/core.js');
-  const background = source + '\n' + await readFile(join(root, 'src/background.js'), 'utf8');
-  const options = source + '\n' + await readFile(join(root, 'src/options.js'), 'utf8');
+  const modules = {};
+  for (const name of ['protocol', 'inventory', 'actions', 'core']) {
+    modules[name] = stripModuleSyntax(await readFile(join(root, `src/${name}.js`), 'utf8'), `src/${name}.js`);
+  }
+  const background = ['protocol', 'inventory', 'actions', 'core'].map(name => modules[name]).join('\n') + '\n' + await readFile(join(root, 'src/background.js'), 'utf8');
+  const options = modules.protocol + '\n' + await readFile(join(root, 'src/options.js'), 'utf8');
   const common = {
     manifest_version: 3,
     name: 'BrowserDock Companion',

@@ -9,7 +9,7 @@ async function page(saved) {
   nodes['pairing-form'].reset = () => { for (const id of ['browser', 'token', 'port']) nodes[id].value = ''; nodes['include-private'].checked = false; };
   const writes = [];
   const storage = { async get() { return { pairing: saved }; }, async set(data) { writes.push(data); }, async remove(key) { writes.push({ removed: key }); } };
-  const core = (await readFile(new URL('../src/core.js', import.meta.url), 'utf8')).replace(/^export /gm, '');
+  const core = (await readFile(new URL('../src/protocol.js', import.meta.url), 'utf8')).replace(/^export /gm, '');
   const code = await readFile(new URL('../src/options.js', import.meta.url), 'utf8');
   const readers = []; const polls = [];
   const runtime = { async sendMessage() { return { state: 'connected' }; } };

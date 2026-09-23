@@ -1,7 +1,7 @@
 <script lang="ts">
   import { buildTree, canNest } from "./trees.js";
   import { entryKey } from "./ids.js";
-  import type { Bookmark, Browser, Group } from "./types";
+  import type { Bookmark, Browser, Group } from "../../shared/types";
   let {
     bookmark,
     bookmarks = [],

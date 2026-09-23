@@ -1,5 +1,5 @@
 import { entryKey } from './ids.js';
-/** @typedef {import('./types').Bookmark} Bookmark */
+/** @typedef {import('../../shared/types').Bookmark} Bookmark */
 /** @typedef {{item: Bookmark, children: TreeNode[], depth: number, count: number, parent: TreeNode|null}} TreeNode */
 /** Rust compares UTF-8 strings lexically: use code points, not locale collation.
  * @param {string} a @param {string} b */

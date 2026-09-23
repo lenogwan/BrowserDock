@@ -1,4 +1,4 @@
-/** @param {import('./types').WindowSize} start @param {number} actualHeight @param {number} dx @param {number} dy */
+/** @param {import('../../shared/types').WindowSize} start @param {number} actualHeight @param {number} dx @param {number} dy */
 export function resizeFromPointer(start, actualHeight, dx, dy) {
  return {width:Math.max(280,Math.min(800,start.width+dx)),height:dy===0?start.height:Math.max(56,actualHeight+dy)};
 }
@@ -10,7 +10,7 @@ export function createSizeController(invoke) {
  /** @param {string} command @param {Record<string,unknown>} [args] */
  function enqueue(command,args){const result=tail.then(()=>invoke(command,args)).then(()=>{});tail=result.catch(()=>{});return result;}
  return {
-  /** @param {import('./types').WindowSize} size */
+  /** @param {import('../../shared/types').WindowSize} size */
   preview:(size)=>enqueue('dock_set_size',{...size}),
   commit:()=>enqueue('dock_commit_size'),
   cancel:()=>enqueue('dock_cancel_size'),

@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onDestroy } from 'svelte';
   import { resizeFromPointer } from './resize.js';
-  import type { WindowSize } from './types';
+  import type { WindowSize } from '../../shared/types';
   let {size,onpreview,oncommit,oncancel}:{size:WindowSize;onpreview:(size:WindowSize)=>Promise<void>;oncommit:(size:WindowSize)=>Promise<void>;oncancel:()=>Promise<void>}=$props();
   let drag: {id:number;x:number;y:number;height:number;size:WindowSize}|null=null;
   let pending:WindowSize|null=null;

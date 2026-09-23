@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { moveBookmark, groupSections, targetLabel } from '../src/lib/groups.js';
-import { searchBookmarks } from '../src/lib/search.js';
+import { moveBookmark, groupSections, targetLabel } from '../src/lib/features/bookmarks/groups.js';
+import { searchBookmarks } from '../src/lib/features/bookmarks/search.js';
 test('move inserts and renumbers without changing original or other scope', () => {
  const original=[{id:'a',title:'A',group_id:'x',sort_order:0},{id:'b',title:'B',group_id:'y',sort_order:0},{id:'c',title:'C',group_id:'y',sort_order:1}];
  const moved=moveBookmark(original,'a','y',1);
