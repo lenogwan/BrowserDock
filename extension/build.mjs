@@ -37,7 +37,11 @@ export async function build(output = root) {
       // browsingActivity is required (not "none"): the companion's core function is
       // sending open-tab URLs/titles to the local BrowserDock app over loopback.
       // Nothing leaves the device; there is no telemetry or remote server.
-      : { ...common, permissions: [...common.permissions, 'contextualIdentities', 'cookies'], background: { scripts: ['background.js'] }, browser_specific_settings: { gecko: { id: 'browserdock@browserdock.local', strict_min_version: '121.0', data_collection_permissions: { required: ['browsingActivity'] } } } };
+      // strict_min_version must satisfy the newest manifest key on every
+      // platform: data_collection_permissions needs desktop 140+ / Android
+      // 142+ (and tabGroups needs 139+), so 142.0 keeps AMO validation clean.
+      // Firefox 121–141 users stay on companion 1.0.4.
+      : { ...common, permissions: [...common.permissions, 'contextualIdentities', 'cookies'], background: { scripts: ['background.js'] }, browser_specific_settings: { gecko: { id: 'browserdock@browserdock.local', strict_min_version: '142.0', data_collection_permissions: { required: ['browsingActivity'] } } } };
     const directory = join(output, flavor);
     await mkdir(directory, { recursive: true });
     await writeFile(join(directory, 'manifest.json'), JSON.stringify(manifest, null, 2) + '\n');
