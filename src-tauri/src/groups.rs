@@ -1,6 +1,6 @@
 use crate::{options::BrowserOptions, vault::Bookmark};
 use serde::{Deserialize, Serialize};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use zeroize::Zeroize;
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -186,7 +186,34 @@ pub fn validate_parent(bookmark: &Bookmark, bookmarks: &[Bookmark]) -> Result<()
         }
         let node = bookmarks
             .iter()
-            .find(|b| b.id == id)
+            .find(|candidate| candidate.id == id)
+            .ok_or("Choose a parent in the same bookmark scope")?;
+        if node.group_id != bookmark.group_id {
+            return Err("Parent and child must share a group".into());
+        }
+        depth += 1;
+        if depth > 2 {
+            return Err("Bookmarks support only root, child and grandchild levels".into());
+        }
+        parent = node.parent_id.as_deref();
+    }
+    Ok(())
+}
+
+fn validate_parent_with_index(
+    bookmark: &Bookmark,
+    by_id: &HashMap<&str, &Bookmark>,
+) -> Result<(), String> {
+    let mut seen = HashSet::from([bookmark.id.as_str()]);
+    let mut parent = bookmark.parent_id.as_deref();
+    let mut depth = 0;
+    while let Some(id) = parent {
+        if !seen.insert(id) {
+            return Err("Bookmark parents cannot form a cycle".into());
+        }
+        let node = by_id
+            .get(id)
+            .copied()
             .ok_or("Choose a parent in the same bookmark scope")?;
         if node.group_id != bookmark.group_id {
             return Err("Parent and child must share a group".into());
@@ -201,20 +228,29 @@ pub fn validate_parent(bookmark: &Bookmark, bookmarks: &[Bookmark]) -> Result<()
 }
 
 pub fn validate_tree(bookmarks: &[Bookmark]) -> Result<(), String> {
+    let mut by_id = HashMap::with_capacity(bookmarks.len());
     for bookmark in bookmarks {
-        validate_parent(bookmark, bookmarks)?;
+        by_id.entry(bookmark.id.as_str()).or_insert(bookmark);
+    }
+    for bookmark in bookmarks {
+        validate_parent_with_index(bookmark, &by_id)?;
     }
     Ok(())
 }
 
 /// Tolerant display only; do not rewrite hand-edited config while reading it.
 pub fn display_roots(bookmarks: &mut [Bookmark]) -> usize {
+    let mut by_id = HashMap::with_capacity(bookmarks.len());
+    for bookmark in bookmarks.iter() {
+        by_id.entry(bookmark.id.as_str()).or_insert(bookmark);
+    }
     let invalid: Vec<_> = bookmarks
         .iter()
         .enumerate()
-        .filter(|(_, b)| validate_parent(b, bookmarks).is_err())
+        .filter(|(_, b)| validate_parent_with_index(b, &by_id).is_err())
         .map(|(i, _)| i)
         .collect();
+    drop(by_id);
     for &i in &invalid {
         bookmarks[i].parent_id = None;
     }
@@ -451,11 +487,15 @@ pub fn delete_bookmark(bookmarks: &mut Vec<Bookmark>, id: &str) -> Result<(), St
 
 /// Preserve unknown JSON fields and unreadable entries when changing organization.
 pub fn patch_organization(values: &mut [serde_json::Value], bookmarks: &[Bookmark]) {
+    let mut positions = HashMap::with_capacity(values.len());
+    for (index, value) in values.iter().enumerate() {
+        if let Some(id) = value.get("id").and_then(|value| value.as_str()) {
+            positions.entry(id.to_owned()).or_insert(index);
+        }
+    }
     for bookmark in bookmarks {
-        if let Some(value) = values
-            .iter_mut()
-            .find(|v| v.get("id").and_then(|v| v.as_str()) == Some(&bookmark.id))
-        {
+        if let Some(index) = positions.get(&bookmark.id).copied() {
+            let value = &mut values[index];
             value["group_id"] = serde_json::json!(bookmark.group_id);
             value["parent_id"] = serde_json::json!(bookmark.parent_id);
             value["sort_order"] = serde_json::json!(bookmark.sort_order);

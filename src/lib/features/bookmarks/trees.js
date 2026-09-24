@@ -53,6 +53,13 @@ export function visibleTree(roots,expanded) {
 export function canNest(items,item,parent) {
   if(!!item.private!==!!parent.private || item.id===parent.id) return false;
   const {index}=buildTree(items);
+  return canNestInTree(index,item,parent);
+}
+/** The render path already owns a tree index; reuse it during high-frequency
+ * dragover events instead of rebuilding and sorting the whole tree each time.
+ * @param {Map<string,TreeNode>} index @param {Bookmark} item @param {Bookmark} parent */
+export function canNestInTree(index,item,parent) {
+  if(!!item.private!==!!parent.private || item.id===parent.id) return false;
   const node=index.get(entryKey(item)), target=index.get(entryKey(parent));
   if(!target)return false;
   let current=target;

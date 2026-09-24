@@ -33,25 +33,31 @@ function buildSections(items, groups) {
           a.title.localeCompare(b.title) ||
           a.id.localeCompare(b.id),
       );
-  const groupSections = ordered.map((group) => ({
-    group,
-    private: !!group.private,
-    items: sortItems(
-      items.filter((b) => b.group_id === group.id && !!b.private === !!group.private),
-    ),
-  }));
-  const ungrouped = scopes.map((scope) => ({
-    group: null,
-    private: scope,
-    items: sortItems(
-      items.filter(
-        (b) =>
-          !!b.private === scope &&
-          !groups.some((g) => g.id === b.group_id && !!g.private === scope),
-      ),
-    ),
-  }));
-  return [...groupSections, ...ungrouped].map(section=>({...section, roots: buildTree(section.items).roots}));
+  // Assign each bookmark once. The previous filter-per-group approach scanned
+  // the full 1,000-item library up to 52 times whenever the source changed.
+  const publicSections = /** @type {Map<string, Section>} */ (new Map());
+  const privateSections = /** @type {Map<string, Section>} */ (new Map());
+  const groupSections = ordered.map((group) => {
+    const section = /** @type {Section} */ ({ group, private: !!group.private, items: [] });
+    (group.private ? privateSections : publicSections).set(group.id, section);
+    return section;
+  });
+  const ungroupedByScope = /** @type {Map<boolean, Section>} */ (new Map(
+    scopes.map((scope) => [scope, { group: null, private: scope, items: [] }]),
+  ));
+  for (const item of items) {
+    const scope = !!item.private;
+    const section = (scope ? privateSections : publicSections).get(item.group_id ?? '') ?? ungroupedByScope.get(scope);
+    section?.items.push(item);
+  }
+  const sections = /** @type {Section[]} */ ([
+    ...groupSections,
+    ...scopes.map((scope) => /** @type {Section} */ (ungroupedByScope.get(scope))),
+  ]);
+  return sections.map(section => {
+    const sorted = sortItems(section.items);
+    return {...section, items: sorted, roots: buildTree(sorted).roots};
+  });
 }
 /** Immutable draft: the caller retains the original for persistence rollback.
  * @param {import('../../shared/types').Bookmark[]} items @param {string} id @param {string|null} groupId @param {number} index @param {string|null|undefined} [parentId] */

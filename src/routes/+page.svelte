@@ -105,7 +105,7 @@
     : groupSections(openMatched, visibleGroups));
   const sections = $derived(baseSections.map((section) => {
     if (query.trim()) return {...section, items: rankResults(section.items, openTabs, bookmarkController.recentMap)};
-    const roots = buildTree(section.items).roots;
+    const roots = section.roots ?? buildTree(section.items).roots;
     const order = rankResults(roots.map(node=>node.item), openTabs, bookmarkController.recentMap);
     const byKey = new Map(roots.map(node=>[entryKey(node.item),node]));
     return {...section, roots: order.map(item=>byKey.get(entryKey(item))!)};

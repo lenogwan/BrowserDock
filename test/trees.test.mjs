@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { buildTree, visibleTree, canNest, loadExpansion, saveExpansion, purgePrivateExpansion, EXPANSION_KEY } from '../src/lib/features/bookmarks/trees.js';
+import { buildTree, visibleTree, canNest, canNestInTree, loadExpansion, saveExpansion, purgePrivateExpansion, EXPANSION_KEY } from '../src/lib/features/bookmarks/trees.js';
 import { moveBookmark, groupSections } from '../src/lib/features/bookmarks/groups.js';
 const item=(id,parent_id=null,more={})=>({id,title:id,url:'https://example.com',target_browser:'firefox',tags:[],parent_id,...more});
 test('trees sort siblings, count descendants and flatten only expanded branches',()=>{
@@ -21,12 +21,15 @@ test('orphans, cross-group links, cycles and cross-scope links render as roots',
 test('nest eligibility rejects self, descendants, excessive depth and other scopes',()=>{
  const root=item('root'),child=item('child','root'),grand=item('grand','child'),other=item('other');
  const items=[root,child,grand,other];
+ const {index}=buildTree(items);
  assert.equal(canNest(items,root,root),false);
  assert.equal(canNest(items,root,child),false);
  assert.equal(canNest(items,root,other),false);
  assert.equal(canNest(items,other,grand),false);
  assert.equal(canNest(items,other,{...child,private:true}),false);
  assert.equal(canNest(items,other,child),true);
+ assert.equal(canNestInTree(index,other,child),true);
+ assert.equal(canNestInTree(index,root,child),false);
 });
 test('moves preserve parents when omitted, unnest on null and sync groups through descendants',()=>{
  const original=[item('root',null,{group_id:'work'}),item('a'),item('child','a'),item('b')];

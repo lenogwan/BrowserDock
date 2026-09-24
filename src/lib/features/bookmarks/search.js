@@ -1,4 +1,14 @@
 import Fuse from "fuse.js";
+const hostCache = /** @type {WeakMap<object, string|null>} */ (new WeakMap());
+/** Parse a bookmark host once for open-state and native-group lookups.
+ * @param {import('../../shared/types').Bookmark} bookmark */
+export function bookmarkHost(bookmark) {
+  if (hostCache.has(bookmark)) return hostCache.get(bookmark);
+  let host = null;
+  try { host = new URL(bookmark.url).hostname.toLowerCase() || null; } catch { /* Invalid URLs are not open. */ }
+  hostCache.set(bookmark, host);
+  return host;
+}
 /** @typedef {import('../../shared/types').Bookmark & {group_name: string}} IndexedBookmark
  * @typedef {{items: IndexedBookmark[]; fuse: import('fuse.js').default<IndexedBookmark>}} BookmarkIndex */
 const indexCache = /** @type {WeakMap<object, WeakMap<object, BookmarkIndex>>} */ (new WeakMap());
@@ -144,8 +154,8 @@ export function buildOpenTabIndex(instances) {
 /** O(1) open-indicator check against a prebuilt index. Same semantics as openInBrowser. */
 /** @param {import('../../shared/types').Bookmark} bookmark @param {OpenTabIndex} index */
 export function isTabOpen(bookmark, index) {
-  let host;
-  try { host = new URL(bookmark.url).hostname.toLowerCase(); } catch { return false; }
+  const host = bookmarkHost(bookmark);
+  if (!host) return false;
   const key = `${bookmark.target_browser}	${host}`;
   const container = bookmark.browser_options?.container;
   if (!container) return index.base.has(key);

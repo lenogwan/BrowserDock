@@ -1,11 +1,11 @@
 <script lang="ts">
   import { ArrowUpRight, ChevronDown, ChevronRight, LockKeyhole, Pencil, Pin, X } from "lucide-svelte";
   import { onMount, onDestroy, tick, untrack } from "svelte";
-  import { visibleTree, canNest, siblingOrder } from "./trees.js";
+  import { visibleTree, canNestInTree, siblingOrder } from "./trees.js";
   import type { TreeNode } from "./trees.js";
   import { targetLabel } from "./groups.js";
-  import { isTabOpen } from "./search.js";
-  import { browserGroupFor, hasBrowserGroup, groupColor } from "./tab-groups.js";
+  import { bookmarkHost, isTabOpen } from "./search.js";
+  import { buildBrowserGroupIndex, browserGroupFromIndex, hasBrowserGroupInIndex, groupColor } from "./tab-groups.js";
   import { entryKey } from "./ids.js";
   import type { Bookmark, Group, Browser, InstanceDigest } from "../../shared/types";
   type Section = { group: Group | null; private: boolean; items: Bookmark[]; roots?: TreeNode[] };
@@ -57,6 +57,7 @@
   let listTop = $state(0);
   let measured = $state(new Map<string, { top: number; height: number }>());
   const nodes = $derived<VNode[]>(buildNodes(sections, grouped, openTabs, treeExpanded));
+  const browserGroups = $derived(buildBrowserGroupIndex(instances, browsers));
   const virtualized = $derived(nodes.length > VIRTUALIZE_AFTER);
   function buildNodes(sections: Section[], grouped: boolean, openTabs: { base: Set<string>; stored: Set<string> }, expanded: Record<string, boolean>): VNode[] {
     const out: VNode[] = [];
@@ -136,10 +137,13 @@
   onMount(() => {
     scrollParent = rootEl?.closest(".panel-content") as HTMLElement | null;
     measureList();
+    let scrollFrame = 0;
     const onScroll = () => {
-      if (!scrollParent) return;
-      scrollTop = scrollParent.scrollTop;
-      measureList();
+      if (!scrollParent || scrollFrame) return;
+      scrollFrame = requestAnimationFrame(() => {
+        scrollFrame = 0;
+        if (scrollParent) scrollTop = scrollParent.scrollTop;
+      });
     };
     const onResize = () => measureList();
     scrollParent?.addEventListener("scroll", onScroll, { passive: true });
@@ -147,6 +151,7 @@
     return () => {
       scrollParent?.removeEventListener("scroll", onScroll);
       window.removeEventListener("resize", onResize);
+      cancelAnimationFrame(scrollFrame);
     };
   });
   $effect(() => {
@@ -200,7 +205,7 @@
     if(e.clientY-rect.top<10) {
       clearTimeout(intentTimer);intentKey="";dropTarget=`insert:${key}`;return;
     }
-    if(!canNest([...treeIndex.values()].map(n=>n.item),dragging,item)) {clearTimeout(intentTimer);intentKey="";dropTarget="";return;}
+    if(!canNestInTree(treeIndex,dragging,item)) {clearTimeout(intentTimer);intentKey="";dropTarget="";return;}
     if(intentKey===key)return;
     clearTimeout(intentTimer);intentKey=key;dropTarget="";
     intentTimer=setTimeout(()=>{if(dragging && intentKey===key)dropTarget=`nest:${key}`;},250);
@@ -220,13 +225,6 @@
       const siblings=node.section.items.filter(b=>(b.parent_id??null)===(item.parent_id??null)&&b.id!==dragging?.id).sort(siblingOrder);
       void drop(node.section.group,siblings.indexOf(item),!!item.private,item.parent_id??null);
     } else cancelDrag();
-  }
-  function host(url: string) {
-    try {
-      return new URL(url).hostname;
-    } catch {
-      return url;
-    }
   }
   function subtreeBrowser(item: Bookmark): string {
     let node = treeIndex.get(entryKey(item));
@@ -278,7 +276,7 @@
             <span style:background={group.color || 'var(--muted)'} class="group-dot"></span>{#if group.collapsed}<ChevronRight size={12} />{:else}<ChevronDown size={12} />{/if} <span class="group-name">{group.name ?? 'Ungrouped'}{isPrivate?' · private':''}</span><small>{sectionItems.length}</small>
           </button>
           <button class="icon-button" disabled={busy || !sectionItems.length} title={`Open group ${group.name} in browser`} aria-label={`Open group ${group.name} in browser`} onclick={()=>onopengroup(group)}><ArrowUpRight size={12}/></button>
-          {#if hasBrowserGroup(group, sectionItems, instances, browsers)}<button class="icon-button" disabled={busy} title={`Close all browser tabs in group ${group.name}`} aria-label={`Close group tabs ${group.name}`} onclick={()=>onclosegroup(group)}><X size={12}/></button>{/if}
+          {#if hasBrowserGroupInIndex(group, sectionItems, browserGroups)}<button class="icon-button" disabled={busy} title={`Close all browser tabs in group ${group.name}`} aria-label={`Close group tabs ${group.name}`} onclick={()=>onclosegroup(group)}><X size={12}/></button>{/if}
           <button class="icon-button group-edit" title={`Edit group ${group.name}`} aria-label={`Edit group ${group.name}`} onclick={()=>ongroup(group)}><Pencil size={12}/></button>
         </div>
       </section>
@@ -288,7 +286,7 @@
     {#if node.item}
       {@const item = node.item}
       {@const section = node.section}
-      {@const nativeGroup = browserGroupFor(item, instances, browsers)}
+      {@const nativeGroup = browserGroupFromIndex(item, browserGroups)}
       <!-- svelte-ignore a11y_no_static_element_interactions -->
       <div data-vkey={node.key} class="result" class:active={node.key === activeKey} class:is-open={node.open} style:padding-left={`${node.depth * 10}px`} class:insertion={dropTarget === `insert:${node.key}`} class:nesting={dropTarget === `nest:${node.key}`} draggable={grouped}
         ondragstart={e=>{dragging=item;e.dataTransfer?.setData('text/plain',item.id);if(e.dataTransfer)e.dataTransfer.effectAllowed='move'}}
@@ -315,7 +313,7 @@
               ></span>{/if}</span
           >
           <span class="result-copy"
-            ><span class="title-line"><strong>{item.title}</strong>{#if (treeIndex.get(node.key)?.count ?? 0)>0}<button class="tree-open" disabled={busy} title={`Open ${item.title} +${treeIndex.get(node.key)?.count} in ${subtreeBrowser(item)}`} aria-label={`Open subtree ${item.title}`} onclick={()=>onopensubtree(item)}>+{treeIndex.get(node.key)?.count}</button>{/if}</span><small>{host(item.url)}</small>{#if nativeGroup}<small class="native-group" style:color={groupColor(nativeGroup.groupColor)} title={`Browser tab group: ${nativeGroup.groupTitle}`}>{nativeGroup.groupTitle || "Untitled browser group"}</small>{/if}{#if !grouped && treeIndex.get(node.key)?.parent}<small class="parent-badge">{treeIndex.get(node.key)?.parent?.item.title}</small>{/if}{#if !grouped && item.group_id}<small class="group-badge">{groups.find(g=>g.id===item.group_id && !!g.private===!!item.private)?.name ?? "Ungrouped"}</small>{/if}</span
+            ><span class="title-line"><strong>{item.title}</strong>{#if (treeIndex.get(node.key)?.count ?? 0)>0}<button class="tree-open" disabled={busy} title={`Open ${item.title} +${treeIndex.get(node.key)?.count} in ${subtreeBrowser(item)}`} aria-label={`Open subtree ${item.title}`} onclick={()=>onopensubtree(item)}>+{treeIndex.get(node.key)?.count}</button>{/if}</span><small>{bookmarkHost(item) ?? item.url}</small>{#if nativeGroup}<small class="native-group" style:color={groupColor(nativeGroup.groupColor)} title={`Browser tab group: ${nativeGroup.groupTitle}`}>{nativeGroup.groupTitle || "Untitled browser group"}</small>{/if}{#if !grouped && treeIndex.get(node.key)?.parent}<small class="parent-badge">{treeIndex.get(node.key)?.parent?.item.title}</small>{/if}{#if !grouped && item.group_id}<small class="group-badge">{groups.find(g=>g.id===item.group_id && !!g.private===!!item.private)?.name ?? "Ungrouped"}</small>{/if}</span
           >
           <span class="target" title={targetLabel(item,browsers)}
             >{targetLabel(item,browsers)}</span
