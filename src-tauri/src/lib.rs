@@ -75,6 +75,35 @@ fn selected_bookmark(
     result
 }
 
+fn bookmark_scope(
+    app: &tauri::AppHandle,
+    config: &launcher::config::Config,
+    private: bool,
+) -> Result<Vec<launcher::vault::Bookmark>, String> {
+    if !private {
+        return Ok(config
+            .bookmarks
+            .iter()
+            .filter_map(|value| serde_json::from_value(value.clone()).ok())
+            .collect());
+    }
+    let state = app
+        .try_state::<runtime::DesktopState>()
+        .ok_or("Configuration unavailable")?;
+    let epoch = state.gate.ticket().ok_or("Vault is locked")?;
+    let mut vault = state.vault.lock().map_err(|_| "Vault unavailable")?;
+    let result = if state.gate.valid(epoch) {
+        vault.list(std::time::Instant::now())
+    } else {
+        Err("Vault is locked".into())
+    };
+    runtime::notify_lock(app, &state, &mut vault);
+    if !state.gate.valid(epoch) {
+        return Err("Vault is locked".into());
+    }
+    result
+}
+
 fn group_data(
     app: &tauri::AppHandle,
     config: &launcher::config::Config,

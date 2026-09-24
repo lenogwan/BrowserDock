@@ -1,6 +1,6 @@
 use crate::{
-    current_config, group_data, group_guard, launcher, runtime, selected_bookmark, win32_helper,
-    LauncherState,
+    bookmark_scope, current_config, group_data, group_guard, launcher, runtime, selected_bookmark,
+    win32_helper, LauncherState,
 };
 use tauri::Manager;
 
@@ -26,10 +26,14 @@ pub(crate) async fn open_group(
         guard,
     )
     .await?;
-    if let Some(browser) = browser_id
-        .as_deref()
-        .or_else(|| bookmarks.last().map(|b| b.target_browser.as_str()))
-    {
+    let foreground_routing = bookmarks
+        .last()
+        .map(|bookmark| launcher::groups::effective_routing(bookmark, &bookmarks));
+    if let Some(browser) = browser_id.as_deref().or_else(|| {
+        foreground_routing
+            .as_ref()
+            .map(|routing| routing.target_browser.as_str())
+    }) {
         let exe = config
             .browsers
             .iter()
@@ -78,7 +82,15 @@ pub(crate) async fn open_bookmark_tree(
                 .collect(),
         )
     };
-    let (tree, hint) = launcher::groups::bookmark_tree(&bookmarks, &groups, &id)?;
+    let (mut tree, hint) = launcher::groups::bookmark_tree(&bookmarks, &groups, &id)?;
+    // Resolve against the full scope so opening a nested parent's subtree still
+    // follows the top-level routing unit. The selected node becomes the batch
+    // root after coercion, while every member keeps its own incognito choice.
+    for bookmark in &mut tree {
+        let routing = launcher::groups::effective_routing(bookmark, &bookmarks);
+        bookmark.target_browser = routing.target_browser;
+        bookmark.browser_options = routing.browser_options;
+    }
     let outcome = launcher::dispatch::group_action_guarded(
         &config,
         state.companion.as_ref().ok(),
@@ -92,8 +104,9 @@ pub(crate) async fn open_bookmark_tree(
     if !guard() {
         return Err("Bookmark subtree open was cancelled; earlier tabs may have changed".into());
     }
-    if let Some(bookmark) = tree.last() {
-        let browser = bookmark.target_browser.as_str();
+    if let Some(bookmark) = tree.first() {
+        let routing = launcher::groups::effective_routing(bookmark, &tree);
+        let browser = routing.target_browser.as_str();
         let exe = config
             .browsers
             .iter()
@@ -259,10 +272,19 @@ pub(crate) async fn close_tab(
     };
     let bookmark = selected_bookmark(&app, &config, bookmark_id.as_deref(), bookmark_private)?;
     let input = bookmark.as_ref().map(|b| b.url.as_str()).unwrap_or(&url);
-    let selected = browser_id
-        .as_deref()
-        .or_else(|| bookmark.as_ref().map(|b| b.target_browser.as_str()));
-    let options = bookmark.as_ref().and_then(|b| b.browser_options.as_ref());
+    let effective = if let Some(bookmark) = bookmark.as_ref() {
+        let scope = bookmark_scope(&app, &config, private_launch)?;
+        Some(launcher::groups::effective_routing(bookmark, &scope))
+    } else {
+        None
+    };
+    let selected = effective
+        .as_ref()
+        .map(|routing| routing.target_browser.as_str())
+        .or(browser_id.as_deref());
+    let options = effective
+        .as_ref()
+        .and_then(|routing| routing.browser_options.as_ref());
     let mode = if exact_match.unwrap_or(false) {
         launcher::ws_server::MatchMode::Exact
     } else {

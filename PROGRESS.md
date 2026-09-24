@@ -1,6 +1,6 @@
 # BrowserDock current status
 
-Current implementation updated 2026-09-24 for the codebase reorganization. Earlier records below remain historical evidence.
+Current implementation updated 2026-09-25 for subtree routing. Earlier records below remain historical evidence.
 
 ## Implemented
 
@@ -12,6 +12,7 @@ Current implementation updated 2026-09-24 for the codebase reorganization. Earli
 - Native tab groups (companion v1.0.4): default-on automatic grouping with Settings toggle, group open/close actions, title/color badges, container-aware inventory, feature-detected fallback, bounded batches and private-session cancellation. See [current contract](SPECIFICATION.md#422-native-browser-tab-groups-companion-v104) and [implementation plan](docs/browser-tab-groups-plan.md).
 - Cold-start group/subtree open (2026-09-22): ungroupable open batches launch one process per argv chunk with every URL as trailing arguments, then wait bounded (~10 s) for the browser's companion and regroup natively; background-only Edge hands off pre-mutation and focus/group errors name the companion result code. Rust suites for this change still need a Windows run (no toolchain in the Linux sandbox).
 - Nested bookmarks: root/child/grandchild trees, validated same-scope parent editing and drag nesting, sibling order, delete/reparent, expansion memory with private cleanup, and explicit subtree opening through the guarded group dispatcher. Normal opening remains one URL; subtree opening allows 50 URLs including the parent. See [implementation plan](docs/deep-groups-plan.md) and SPEC §3.1/§4.3/§5.2.
+- Subtree routing (v0.4.0, 2026-09-25): descendants inherit browser/profile/container on nest and through following parent edits, while incognito remains per bookmark and grandfathered divergences expose a Custom/Follow parent editor path. Bulk subtree/group opens and close matching resolve through each top-level root, with solo opens retaining stored child routing. See [implementation plan](docs/subtree-routing-plan.md) and SPEC §3.1/§4.3/§5.2.
 - Appearance: Sage Mint, Nord Frost, Midnight Amber, Tokyo Violet and Rosé Pine, with immediate preview, save/discard, legacy `dark` fallback and shared CSS tokens. See [implementation plan](docs/theme-settings-plan.md) and SPEC §3.1/§5.2.
 - UI readability (2026-09-24): the expanded panel and search field gain a background fill as dock opacity drops, while group headings sit closer to their rows. The opacity preview explains this behavior; see SPEC §5.2.
 - Codebase reorganization (2026-09-24): Svelte components and helpers live in feature folders, desktop IPC in typed command/event modules, and route state in bookmark, vault, settings, companion and window controllers. Tauri shell commands live under `src-tauri/src/commands/`; extension protocol, inventory, actions and connection source are separate and both browser distributions were rebuilt. IPC names, storage formats and extension message shapes remain unchanged. See SPEC §6.
@@ -42,6 +43,12 @@ Native Windows foregrounding, tray, DPI, browser profiles/containers/private win
 - Windows CI exposed a CRLF checkout failure in the extension module import validator. The build now accepts LF and CRLF source, with a Windows-line-ending regression test. The extension rebuild and 91 extension tests pass locally; the Windows CI rerun is pending.
 
 Native Windows checks remain required before release: real browser/profile/container/private-window behavior, foregrounding/minimized windows, shortcuts/panic timing, tray failures, drag/resize/DPI/multi-monitor behavior, memory target and clean install/upgrade/uninstall. See [dock checklist](docs/phase-6-7.md#native-windows-acceptance), [companion checklist](extension/README.md#manual-windows-validation) and [release checklist](docs/windows-installer.md#release-validation).
+
+### Subtree routing verification (2026-09-25)
+
+- Passed: 91 Rust core tests, including nest/edit/un-nest/delete propagation, grandfathered solo versus bulk routing, family-specific option filtering, coerced group close and incognito batch separation; 29 UI tests; Svelte check with zero diagnostics; production frontend build; and the rendered nested-bookmark/theme smoke at 280–800 px with inherited, Custom and Follow parent editor states plus the root-browser tooltip.
+- The Windows MSVC-target application check passed with the existing GNU-compiler warning. Core Clippy on Rust 1.98 reached only four existing warnings in untouched `pairing.rs`, `ws_server.rs` and `launcher.rs`; no warning points to this change.
+- The rendered smoke uses mocked desktop IPC. Native Windows browser/profile/container/private-window behavior, foregrounding, DPI, memory and installer acceptance remain manual; no extension source or protocol changed, so companion distributions were not rebuilt.
 
 The 2026-09-24 readability change passed Svelte check, 27 UI tests, production build and the rendered nested-bookmark/theme smoke at 280–800px, including the 30% opacity surface check. Desktop IPC was mocked; contrast over arbitrary desktop windows and native Windows rendering still need visual acceptance.
 

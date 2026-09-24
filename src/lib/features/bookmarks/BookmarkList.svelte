@@ -228,6 +228,11 @@
       return url;
     }
   }
+  function subtreeBrowser(item: Bookmark): string {
+    let node = treeIndex.get(entryKey(item));
+    while (node?.parent) node = node.parent;
+    return node?.item.target_browser ?? item.target_browser;
+  }
   // Subtle per-browser avatar tint so rows are scannable without reading the
   // target label. Hex colors get a translucent wash; anything else is ignored.
   // Memoized by browser id: the template calls these per row per render.
@@ -310,7 +315,7 @@
               ></span>{/if}</span
           >
           <span class="result-copy"
-            ><span class="title-line"><strong>{item.title}</strong>{#if (treeIndex.get(node.key)?.count ?? 0)>0}<button class="tree-open" disabled={busy} title={`Open ${item.title} and all ${treeIndex.get(node.key)?.count} descendants`} aria-label={`Open subtree ${item.title}`} onclick={()=>onopensubtree(item)}>+{treeIndex.get(node.key)?.count}</button>{/if}</span><small>{host(item.url)}</small>{#if nativeGroup}<small class="native-group" style:color={groupColor(nativeGroup.groupColor)} title={`Browser tab group: ${nativeGroup.groupTitle}`}>{nativeGroup.groupTitle || "Untitled browser group"}</small>{/if}{#if !grouped && treeIndex.get(node.key)?.parent}<small class="parent-badge">{treeIndex.get(node.key)?.parent?.item.title}</small>{/if}{#if !grouped && item.group_id}<small class="group-badge">{groups.find(g=>g.id===item.group_id && !!g.private===!!item.private)?.name ?? "Ungrouped"}</small>{/if}</span
+            ><span class="title-line"><strong>{item.title}</strong>{#if (treeIndex.get(node.key)?.count ?? 0)>0}<button class="tree-open" disabled={busy} title={`Open ${item.title} +${treeIndex.get(node.key)?.count} in ${subtreeBrowser(item)}`} aria-label={`Open subtree ${item.title}`} onclick={()=>onopensubtree(item)}>+{treeIndex.get(node.key)?.count}</button>{/if}</span><small>{host(item.url)}</small>{#if nativeGroup}<small class="native-group" style:color={groupColor(nativeGroup.groupColor)} title={`Browser tab group: ${nativeGroup.groupTitle}`}>{nativeGroup.groupTitle || "Untitled browser group"}</small>{/if}{#if !grouped && treeIndex.get(node.key)?.parent}<small class="parent-badge">{treeIndex.get(node.key)?.parent?.item.title}</small>{/if}{#if !grouped && item.group_id}<small class="group-badge">{groups.find(g=>g.id===item.group_id && !!g.private===!!item.private)?.name ?? "Ungrouped"}</small>{/if}</span
           >
           <span class="target" title={targetLabel(item,browsers)}
             >{targetLabel(item,browsers)}</span

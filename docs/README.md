@@ -16,6 +16,7 @@ Start with [AGENTS](../AGENTS.md) and [current status](../PROGRESS.md). Load onl
 | Companion reliability and recorded checks | [Companion pass](companion-improvements-plan.md) |
 | Browser tab groups integration plan | [Tab groups integration plan](browser-tab-groups-plan.md) |
 | Nested bookmarks implementation plan | [Deep groups plan](deep-groups-plan.md) |
+| Subtree routing (children follow parent) task spec | [Subtree routing plan](subtree-routing-plan.md) |
 | Five-theme implementation plan | [Theme settings plan](theme-settings-plan.md) |
 | Earlier QA findings and resolutions | [BUGS](../BUGS.md), [handover review](PRE-HANDOVER-REVIEW.md) |
 

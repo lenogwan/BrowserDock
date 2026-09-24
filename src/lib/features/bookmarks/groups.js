@@ -66,11 +66,16 @@ export function moveBookmark(items,id,groupId,index,parentId) {
    const parent=draft.find(b=>b.id===moved.parent_id && !!b.private===!!moved.private);
    if(!parent)throw Error('Choose a parent in the same bookmark scope');
    moved.group_id=parent.group_id??null;
+   if(parentId!==undefined)inheritRouting(moved,parent);
  }
  const pending=[moved],seen=new Set();
  while(pending.length) {
    const parent=pending.pop(); if(!parent||seen.has(parent.id))continue;seen.add(parent.id);
-   for(const child of draft.filter(b=>b.parent_id===parent.id && !!b.private===!!parent.private)) {child.group_id=parent.group_id;pending.push(child);}
+   for(const child of draft.filter(b=>b.parent_id===parent.id && !!b.private===!!parent.private)) {
+     child.group_id=parent.group_id;
+     if(parentId!==undefined && moved.parent_id)inheritRouting(child,parent);
+     pending.push(child);
+   }
  }
  validateTree(draft);
  const siblings=draft.filter(b=>b!==moved && !!b.private===!!moved.private && (b.group_id??null)===(moved.group_id??null) && (b.parent_id??null)===(moved.parent_id??null)).sort(siblingOrder);
@@ -80,6 +85,23 @@ export function moveBookmark(items,id,groupId,index,parentId) {
  for(const b of draft) {const key=JSON.stringify([!!b.private,b.group_id??null,b.parent_id??null]);if(!partitions.has(key))partitions.set(key,[]);partitions.get(key).push(b);}
  for(const partition of partitions.values())partition.sort(siblingOrder).forEach((/** @type {import('../../shared/types').Bookmark} */ b,/** @type {number} */ i)=>b.sort_order=i);
  return draft;
+}
+/** Governed routing excludes incognito, which stays a per-bookmark launch choice.
+ * @param {import('../../shared/types').Bookmark} left @param {import('../../shared/types').Bookmark} right */
+export function governedRoutingMatches(left,right) {
+ return left.target_browser===right.target_browser
+  && (left.browser_options?.profile??null)===(right.browser_options?.profile??null)
+  && (left.browser_options?.container??null)===(right.browser_options?.container??null);
+}
+/** @param {import('../../shared/types').Bookmark} item @param {import('../../shared/types').Bookmark} parent */
+export function inheritRouting(item,parent) {
+ item.target_browser=parent.target_browser;
+ item.browser_options={
+   profile:parent.browser_options?.profile??null,
+   container:parent.browser_options?.container??null,
+   incognito:item.browser_options?.incognito??false,
+ };
+ return item;
 }
 /** @param {import('../../shared/types').Bookmark} item @param {import('../../shared/types').Browser[]} browsers */
 export function targetLabel(item,browsers) {

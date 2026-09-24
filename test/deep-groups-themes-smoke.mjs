@@ -11,7 +11,7 @@ function mockDesktop(){
   const group={id:'work',name:'Work',color:'#4285f4',sort_order:0,collapsed:false};
   const bookmark={id:'one',title:'Project docs',url:'https://one.test/',target_browser:'firefox',tags:[],icon:'',group_id:'work'};
   const settings={theme:'dark',window_size:{width:400,height:null},always_on_top:true,auto_hide:false,hide_on_open:false,auto_tab_groups:true,opacity:1,vault_timeout_minutes:5,global_shortcut:'Ctrl+Shift+Space',panic_shortcut:'Ctrl+Alt+L'};
-  const items=[bookmark,{...bookmark,id:'child',title:'Child docs',parent_id:'one'},{...bookmark,id:'grand',title:'Grandchild docs',parent_id:'child'},{...bookmark,id:'other',title:'Other docs'}];
+  const items=[bookmark,{...bookmark,id:'child',title:'Child docs',parent_id:'one',target_browser:'edge',browser_options:{profile:'Profile 1'}},{...bookmark,id:'grand',title:'Grandchild docs',parent_id:'child',target_browser:'edge',browser_options:{profile:'Profile 1'}},{...bookmark,id:'other',title:'Other docs'}];
   const state=window.groupTest={calls:[],settings,items,closed:false,fail:false,locked:false};
   window.emitGroupTest=event=>{for(const id of listeners.get(event)||[])callbacks.get(id)?.({event,payload:null});};
   window.__TAURI_EVENT_PLUGIN_INTERNALS__={unregisterListener:()=>{}};
@@ -19,12 +19,13 @@ function mockDesktop(){
     state.calls.push({cmd,args});
     switch(cmd){
       case 'plugin:event|listen':{const ids=listeners.get(args.event)||[];ids.push(args.handler);listeners.set(args.event,ids);return args.handler;}
-      case 'get_dock_data':return {bookmarks:state.items,groups:[group],browsers:[{id:'firefox',name:'Firefox',color:'#ff7139',exe_path:''}],settings:{...settings},warnings:[]};
+      case 'get_dock_data':return {bookmarks:state.items,groups:[group],browsers:[{id:'firefox',name:'Firefox',color:'#ff7139',exe_path:''},{id:'edge',name:'Edge',color:'#0078d7',exe_path:''}],settings:{...settings},warnings:[]};
       case 'vault_status':return {exists:true,locked:state.locked,retry_after_seconds:0};
       case 'vault_list':return {groups:[{...group,id:'private',name:'Private work'}],bookmarks:[{...bookmark,id:'secret',group_id:'private',title:'Secret docs'},{...bookmark,id:'secret-child',parent_id:'secret',group_id:'private',title:'Secret child'}]};
       case 'companion_tabs_digest':return {error:null,instances:[{instance_id:'test',browser:'firefox',tabs:state.closed?[]:[{host:'one.test',groupTitle:'Work',groupColor:'blue'}]}]};
       case 'route_details':return {browser_id:'firefox'};
       case 'route_url':return 'firefox';
+      case 'browser_profiles':return [];
       case 'open_url':return {browser_id:'firefox'};
       case 'open_bookmark_tree':if(args.private)return new Promise(resolve=>state.finishPrivate=()=>resolve({processed:2}));if(state.fail)throw Error('Partial subtree failure; no retry made');return {processed:3};
       case 'move_bookmark':if(state.fail)throw Error('Move rejected');return;
@@ -45,6 +46,10 @@ try {
   await page.getByRole('button',{name:'Open subtree Project docs',exact:true}).waitFor();
   assert.equal(await row('child').count(),0);
   assert.equal(await page.getByRole('button',{name:'Open subtree Project docs',exact:true}).textContent(),'+2');
+  assert.equal(await page.getByRole('button',{name:'Open subtree Project docs',exact:true}).getAttribute('title'),'Open Project docs +2 in firefox');
+  await row('one').hover();await page.getByRole('button',{name:'Edit Project docs',exact:true}).click();
+  await page.getByText('2 sub-pages follow this browser.',{exact:true}).waitFor();
+  await page.getByRole('button',{name:'Cancel',exact:true}).click();
   await page.getByRole('button',{name:'Open Project docs in firefox',exact:true}).click();
   assert.equal((await lastCall('open_url')).bookmarkId,'one');
   await page.getByRole('button',{name:'Open subtree Project docs',exact:true}).click();
@@ -75,10 +80,20 @@ try {
   await page.locator('.parent-badge').filter({hasText:'Child docs'}).waitFor();
   assert.equal(await row('grand').evaluate(e=>e.style.paddingLeft),'0px');
   await search.fill('');
+  // A grandfathered child remains editable until Follow parent normalizes and saves it.
+  await row('child').hover();await page.getByRole('button',{name:'Edit Child docs',exact:true}).click();
+  await page.getByText('Custom',{exact:true}).waitFor();
+  assert.equal(await page.locator('label').filter({hasText:'Open with'}).locator('select').isDisabled(),false);
+  await page.getByRole('button',{name:'Follow parent',exact:true}).click();
+  assert.equal((await lastCall('save_bookmark')).bookmark.target_browser,'firefox');
+  assert.equal((await lastCall('save_bookmark')).bookmark.browser_options.profile,null);
+  await row('child').waitFor();
   // Parent editor offers the accessible nesting path and locks the group.
   await row('other').hover();await page.getByRole('button',{name:'Edit Other docs',exact:true}).click();
   await page.getByLabel('Parent',{exact:true}).selectOption('one');
   assert.equal(await page.getByLabel('Group',{exact:true}).isDisabled(),true);
+  assert.equal(await page.locator('label').filter({hasText:'Open with'}).locator('select').isDisabled(),true);
+  await page.getByText('Follows Project docs (Firefox).',{exact:true}).waitFor();
   await page.getByRole('button',{name:'Save bookmark',exact:true}).click();
   assert.equal((await lastCall('save_bookmark')).bookmark.parent_id,'one');
   await row('other').waitFor();
@@ -176,5 +191,5 @@ try {
   await touch.screenshot({path:'/tmp/browserdock-tree-touch.png'});
   await touch.close();
   assert.deepEqual(errors,[]);
-  console.log('Deep groups and themes smoke passed: split opens, keyboard, trees, search, parent editor, drag intent/rollback/scope/cancel, private lock, themes preview/save/discard, and 280–800px layout.');
+  console.log('Deep groups and themes smoke passed: subtree routing tooltip/editor states, split opens, keyboard, trees, search, drag intent/rollback/scope/cancel, private lock, themes preview/save/discard, and 280–800px layout.');
 } finally {await browser.close();}

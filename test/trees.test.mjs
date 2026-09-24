@@ -44,6 +44,22 @@ test('moves preserve parents when omitted, unnest on null and sync groups throug
  assert.equal(original[1].parent_id,null);
  assert.throws(()=>moveBookmark(moved,'a',null,0,'child'));
 });
+test('nesting rewrites governed routing through descendants and preserves incognito',()=>{
+ const original=[
+  item('root',null,{target_browser:'firefox',browser_options:{container:'Work'}}),
+  item('child',null,{target_browser:'edge',browser_options:{profile:'Profile 1',incognito:true}}),
+  item('grand','child',{target_browser:'chrome',browser_options:{profile:'Profile 2'}}),
+ ];
+ const moved=moveBookmark(original,'child',null,0,'root');
+ for(const id of ['child','grand']) {
+  assert.equal(moved.find(b=>b.id===id).target_browser,'firefox');
+  assert.equal(moved.find(b=>b.id===id).browser_options.container,'Work');
+  assert.equal(moved.find(b=>b.id===id).browser_options.profile,null);
+ }
+ assert.equal(moved.find(b=>b.id==='child').browser_options.incognito,true);
+ assert.equal(moved.find(b=>b.id==='grand').browser_options.incognito,false);
+ assert.equal(original[1].target_browser,'edge');
+});
 test('expansion storage contains IDs only, tolerates corruption and purges private keys',()=>{
  const values=new Map();const storage={getItem:k=>values.get(k),setItem:(k,v)=>values.set(k,v)};
  saveExpansion({'a-public':true,'secret-private':true,'closed-public':false},storage);

@@ -268,11 +268,12 @@ pub async fn group_action_guarded(
     let mut batches: Vec<(crate::RouteDetails, zeroize::Zeroizing<Vec<String>>)> = Vec::new();
     for bookmark in bookmarks {
         bookmark.validate()?;
+        let effective = crate::groups::effective_routing(bookmark, bookmarks);
         let details = route_details(
             config,
             &bookmark.url,
-            override_id.or(Some(&bookmark.target_browser)),
-            bookmark.browser_options.as_ref(),
+            override_id.or(Some(&effective.target_browser)),
+            effective.browser_options.as_ref(),
         )?;
         if close && details.incognito {
             return Err(

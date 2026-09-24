@@ -13,6 +13,18 @@ fn group() -> Group {
 fn ids(items: &[Bookmark]) -> Vec<&str> {
     items.iter().map(|b| b.id.as_str()).collect()
 }
+fn routed(
+    id: &str,
+    parent: Option<&str>,
+    browser: &str,
+    profile: Option<&str>,
+    container: Option<&str>,
+) -> Bookmark {
+    serde_json::from_value(json!({
+        "id":id,"title":id,"url":format!("https://{id}.test/"),"target_browser":browser,
+        "parent_id":parent,"browser_options":{"profile":profile,"container":container,"incognito":false}
+    })).unwrap()
+}
 #[test]
 fn nest_reorder_unnest_and_group_sync_are_atomic() {
     let mut root = bookmark("root", None);
@@ -152,6 +164,101 @@ fn changing_root_group_syncs_all_descendants() {
     root.group_id = Some("work".into());
     groups::save_bookmark(&mut items, &[group()], root).unwrap();
     assert!(items.iter().all(|b| b.group_id.as_deref() == Some("work")));
+}
+#[test]
+fn nesting_rewrites_the_entire_branch_but_unnesting_keeps_its_route() {
+    let root = routed("root", None, "firefox", None, Some("Work"));
+    let child = routed("child", None, "edge", Some("Profile 1"), None);
+    let grandchild = routed(
+        "grandchild",
+        Some("child"),
+        "chrome",
+        Some("Profile 2"),
+        None,
+    );
+    let mut items = vec![root, child, grandchild];
+    groups::move_bookmark(&mut items, &[], "child", None, Some(Some("root".into())), 0).unwrap();
+    for id in ["child", "grandchild"] {
+        let item = items.iter().find(|item| item.id == id).unwrap();
+        assert_eq!(item.target_browser, "firefox");
+        assert_eq!(
+            item.browser_options.as_ref().unwrap().container.as_deref(),
+            Some("Work")
+        );
+        assert!(item.browser_options.as_ref().unwrap().profile.is_none());
+    }
+    groups::move_bookmark(&mut items, &[], "child", None, Some(None), 0).unwrap();
+    let child = items.iter().find(|item| item.id == "child").unwrap();
+    assert_eq!(child.target_browser, "firefox");
+    assert_eq!(
+        child.browser_options.as_ref().unwrap().container.as_deref(),
+        Some("Work")
+    );
+}
+#[test]
+fn parent_edit_updates_followers_and_preserves_grandfathered_custom_branches() {
+    let root = routed("root", None, "firefox", None, Some("Work"));
+    let child = routed("child", Some("root"), "firefox", None, Some("Work"));
+    let grandchild = routed("grandchild", Some("child"), "firefox", None, Some("Work"));
+    let custom = routed("custom", Some("root"), "edge", Some("Profile 1"), None);
+    let custom_child = routed(
+        "custom-child",
+        Some("custom"),
+        "edge",
+        Some("Profile 1"),
+        None,
+    );
+    let mut items = vec![root, child, grandchild, custom, custom_child];
+    let edited = routed("root", None, "chrome", Some("Default"), None);
+    groups::save_bookmark(&mut items, &[], edited).unwrap();
+    for id in ["root", "child", "grandchild"] {
+        let item = items.iter().find(|item| item.id == id).unwrap();
+        assert_eq!(item.target_browser, "chrome");
+        assert_eq!(
+            item.browser_options.as_ref().unwrap().profile.as_deref(),
+            Some("Default")
+        );
+    }
+    for id in ["custom", "custom-child"] {
+        let item = items.iter().find(|item| item.id == id).unwrap();
+        assert_eq!(item.target_browser, "edge");
+        assert_eq!(
+            item.browser_options.as_ref().unwrap().profile.as_deref(),
+            Some("Profile 1")
+        );
+    }
+    let custom = items.iter().find(|item| item.id == "custom").unwrap();
+    let bulk = groups::effective_routing(custom, &items);
+    assert_eq!(bulk.target_browser, "chrome");
+    assert_eq!(
+        bulk.browser_options.unwrap().profile.as_deref(),
+        Some("Default")
+    );
+}
+#[test]
+fn delete_reparent_uses_the_adopting_parent_route_and_public_patch_keeps_unknown_fields() {
+    let root = routed("root", None, "firefox", None, Some("Work"));
+    let middle = routed("middle", Some("root"), "edge", Some("Profile 1"), None);
+    let leaf = routed("leaf", Some("middle"), "chrome", Some("Profile 2"), None);
+    let mut items = vec![root, middle, leaf];
+    groups::delete_bookmark(&mut items, "middle").unwrap();
+    let leaf = items.iter().find(|item| item.id == "leaf").unwrap();
+    assert_eq!(leaf.parent_id.as_deref(), Some("root"));
+    assert_eq!(leaf.target_browser, "firefox");
+    assert_eq!(
+        leaf.browser_options.as_ref().unwrap().container.as_deref(),
+        Some("Work")
+    );
+    let mut raw = vec![json!({
+        "id":"leaf","target_browser":"chrome","future":{"keep":true},
+        "browser_options":{"profile":"Profile 2","future_option":42,"incognito":false}
+    })];
+    groups::patch_organization(&mut raw, &items);
+    assert_eq!(raw[0]["target_browser"], "firefox");
+    assert_eq!(raw[0]["browser_options"]["container"], "Work");
+    assert!(raw[0]["browser_options"]["profile"].is_null());
+    assert_eq!(raw[0]["browser_options"]["future_option"], 42);
+    assert_eq!(raw[0]["future"]["keep"], true);
 }
 #[test]
 fn private_tree_persists_encrypted_and_delete_reparents() {
