@@ -20,6 +20,7 @@
   } from "lucide-svelte";
   import SearchBar from "$lib/features/bookmarks/SearchBar.svelte";
   import BrowserBadge from "$lib/features/browsers/BrowserBadge.svelte";
+  import { installedDockBrowsers } from "$lib/features/browsers/availability.js";
   import { BookmarksController, type BookmarkContext } from "$lib/features/bookmarks/controller.svelte";
   import BookmarkList from "$lib/features/bookmarks/BookmarkList.svelte";
   import { VaultController } from "$lib/features/vault/controller.svelte";
@@ -90,6 +91,7 @@
   const all = $derived(
     view === "vault" ? vaultController.bookmarks : [...bookmarkController.bookmarks, ...vaultController.bookmarks],
   );
+  const installedBrowsers = $derived(installedDockBrowsers(browsers));
   const allTree = $derived(buildTree(all));
   const visibleGroups = $derived(view === "vault" ? vaultController.groups : [...bookmarkController.groups, ...vaultController.groups]);
   const matched = $derived(searchBookmarks(all, query, visibleGroups));
@@ -322,7 +324,12 @@
     } catch (e) {
       if (current === vaultController.generation) error = String(e);
     } finally {
-      if (current === vaultController.generation) busy = false;
+      // Unconditional: single-flight gating (every setter is preceded by
+      // `if (busy) return`) makes this safe, while a generation-guarded
+      // reset wedges the whole dock whenever generation advances mid-flight
+      // (e.g. vault auto-lock during a slow launch) — every later action
+      // would then hit `if (busy) return` and die silently.
+      busy = false;
     }
   }
   function toggleTree(bookmark: Bookmark, expand?: boolean) {
@@ -345,7 +352,7 @@
         windowController.expanded = false; windowController.dockVisible = false;
       }
     } catch(e) {if(current===vaultController.generation)error=String(e);}
-    finally {if(current===vaultController.generation)busy=false;}
+    finally {busy=false;}
   }
   async function groupAction(group: Group, close = false) {
     if (busy) return;
@@ -372,7 +379,12 @@
     } catch (e) {
       if (current === vaultController.generation) error = String(e);
     } finally {
-      if (current === vaultController.generation) busy = false;
+      // Unconditional: single-flight gating (every setter is preceded by
+      // `if (busy) return`) makes this safe, while a generation-guarded
+      // reset wedges the whole dock whenever generation advances mid-flight
+      // (e.g. vault auto-lock during a slow launch) — every later action
+      // would then hit `if (busy) return` and die silently.
+      busy = false;
     }
   }
   async function closeBookmark(bookmark: Bookmark) {
@@ -402,7 +414,12 @@
     } catch (e) {
       if (current === vaultController.generation) error = String(e);
     } finally {
-      if (current === vaultController.generation) busy = false;
+      // Unconditional: single-flight gating (every setter is preceded by
+      // `if (busy) return`) makes this safe, while a generation-guarded
+      // reset wedges the whole dock whenever generation advances mid-flight
+      // (e.g. vault auto-lock during a slow launch) — every later action
+      // would then hit `if (busy) return` and die silently.
+      busy = false;
     }
   }
   async function keydown(e: KeyboardEvent) {
@@ -686,7 +703,7 @@
         }}
       />
       <div class="browser-chips">
-        {#each browsers.filter( (b) => ["firefox", "mullvad", "chrome", "edge"].includes(b.id) ) as browser}<BrowserBadge
+        {#each installedBrowsers as browser}<BrowserBadge
             id={browser.id}
             selected={override === browser.id}
             onclick={() => {
