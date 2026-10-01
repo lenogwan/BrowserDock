@@ -13,6 +13,7 @@ Start with [AGENTS](../AGENTS.md) and [current status](../PROGRESS.md). Load onl
 | V2 decisions | [V2 design](IMPROVEMENTS-V2.md) |
 | Resize decisions | [V3 design](IMPROVEMENTS-V3-RESIZABLE-WINDOW.md) |
 | UI decisions and recorded checks | [UI handover](UI-OPTIMIZATION-HANDOVER.md) |
+| Organization/import/backup usability review | [UI/UX review](ui-ux-review.md); current contracts remain in SPEC §5 |
 | Companion reliability and recorded checks | [Companion pass](companion-improvements-plan.md) |
 | Browser tab groups integration plan | [Tab groups integration plan](browser-tab-groups-plan.md) |
 | Nested bookmarks implementation plan | [Deep groups plan](deep-groups-plan.md) |

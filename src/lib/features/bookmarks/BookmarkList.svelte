@@ -276,12 +276,14 @@
         ondragover={e=>{if(grouped && dragging && !!dragging.private===isPrivate){e.preventDefault();clearTimeout(intentTimer);intentKey='';dropTarget=(group.id + ':' + isPrivate)}}}
         ondrop={e=>{e.preventDefault();void drop(group,sectionItems.filter(b=>!b.parent_id && b.id!==dragging?.id).length,isPrivate,null)}}>
         <div class="group-header">
-          <button class="group-title" aria-expanded={!group.collapsed} onclick={()=>ontoggle(group)}>
+          <button class="group-title" disabled={busy} aria-expanded={!group.collapsed} onclick={()=>ontoggle(group)}>
             <span style:background={group.color || 'var(--muted)'} class="group-dot"></span>{#if group.collapsed}<ChevronRight size={12} />{:else}<ChevronDown size={12} />{/if} <span class="group-name">{group.name ?? 'Ungrouped'}{isPrivate?' · private':''}</span><small>{sectionItems.length}</small>
           </button>
+          {#if !selecting}
           <button class="icon-button" disabled={busy || !sectionItems.length} title={`Open group ${group.name} in browser`} aria-label={`Open group ${group.name} in browser`} onclick={()=>onopengroup(group)}><ArrowUpRight size={12}/></button>
           {#if hasBrowserGroupInIndex(group, sectionItems, browserGroups)}<button class="icon-button" disabled={busy} title={`Close all browser tabs in group ${group.name}`} aria-label={`Close group tabs ${group.name}`} onclick={()=>onclosegroup(group)}><X size={12}/></button>{/if}
           <button class="icon-button group-edit" title={`Edit group ${group.name}`} aria-label={`Edit group ${group.name}`} onclick={()=>ongroup(group)}><Pencil size={12}/></button>
+          {/if}
         </div>
       </section>
     {/if}
@@ -292,7 +294,7 @@
       {@const section = node.section}
       {@const nativeGroup = browserGroupFromIndex(item, browserGroups)}
       <!-- svelte-ignore a11y_no_static_element_interactions -->
-      <div data-vkey={node.key} class="result" class:active={node.key === activeKey} class:is-open={node.open} style:padding-left={`${node.depth * 10}px`} class:insertion={dropTarget === `insert:${node.key}`} class:nesting={dropTarget === `nest:${node.key}`} draggable={grouped && !selecting}
+      <div data-vkey={node.key} class="result" class:active={!selecting && node.key === activeKey} class:chosen={selecting && selectionPrivate === !!item.private && selectedIds.includes(item.id)} class:is-open={node.open} style:padding-left={`${node.depth * 10}px`} class:insertion={dropTarget === `insert:${node.key}`} class:nesting={dropTarget === `nest:${node.key}`} draggable={grouped && !selecting}
         ondragstart={e=>{dragging=item;e.dataTransfer?.setData('text/plain',item.id);if(e.dataTransfer)e.dataTransfer.effectAllowed='move'}}
         ondragend={cancelDrag}
         ondragover={e=>dragOver(e,item)}
@@ -305,7 +307,7 @@
           </button>
         {:else}<span class="tree-spacer" aria-hidden="true"></span>{/if}
         <div class="result-main">
-          <button class="row-open" onfocus={()=>onfocusbookmark?.(item)} onclick={(e)=>onopen(item,e.shiftKey)} aria-label={`Open ${item.title} in ${item.target_browser}`}></button>
+          <button class="row-open" disabled={busy} onfocus={()=>onfocusbookmark?.(item)} onclick={(e)=>selecting ? onselect?.(item) : onopen(item,e.shiftKey)} aria-pressed={selecting ? selectionPrivate === !!item.private && selectedIds.includes(item.id) : undefined} aria-label={selecting ? `${selectionPrivate === !!item.private && selectedIds.includes(item.id) ? 'Deselect' : 'Select'} bookmark ${item.title}` : `Open ${item.title} in ${item.target_browser}`}></button>
           <span class="monogram" class:private-mark={item.private}
             style:background={avatarWash(item) || undefined}
             style:border-color={avatarEdge(item) || undefined}
@@ -318,13 +320,13 @@
               ></span>{/if}</span
           >
           <span class="result-copy"
-            ><span class="title-line"><strong>{item.title}</strong>{#if (treeIndex.get(node.key)?.count ?? 0)>0}<button class="tree-open" disabled={busy} title={`Open ${item.title} +${treeIndex.get(node.key)?.count} in ${subtreeBrowser(item)}`} aria-label={`Open subtree ${item.title}`} onclick={()=>onopensubtree(item)}>+{treeIndex.get(node.key)?.count}</button>{/if}</span><small>{bookmarkHost(item) ?? item.url}</small>{#if nativeGroup}<small class="native-group" style:color={groupColor(nativeGroup.groupColor)} title={`Browser tab group: ${nativeGroup.groupTitle}`}>{nativeGroup.groupTitle || "Untitled browser group"}</small>{/if}{#if !grouped && treeIndex.get(node.key)?.parent}<small class="parent-badge">{treeIndex.get(node.key)?.parent?.item.title}</small>{/if}{#if !grouped && item.group_id}<small class="group-badge">{groups.find(g=>g.id===item.group_id && !!g.private===!!item.private)?.name ?? "Ungrouped"}</small>{/if}</span
+            ><span class="title-line"><strong>{item.title}</strong>{#if !selecting && (treeIndex.get(node.key)?.count ?? 0)>0}<button class="tree-open" disabled={busy} title={`Open ${item.title} +${treeIndex.get(node.key)?.count} in ${subtreeBrowser(item)}`} aria-label={`Open subtree ${item.title}`} onclick={()=>onopensubtree(item)}>+{treeIndex.get(node.key)?.count}</button>{/if}</span><small>{bookmarkHost(item) ?? item.url}</small>{#if nativeGroup}<small class="native-group" style:color={groupColor(nativeGroup.groupColor)} title={`Browser tab group: ${nativeGroup.groupTitle}`}>{nativeGroup.groupTitle || "Untitled browser group"}</small>{/if}{#if !grouped && treeIndex.get(node.key)?.parent}<small class="parent-badge">{treeIndex.get(node.key)?.parent?.item.title}</small>{/if}{#if !grouped && item.group_id}<small class="group-badge">{groups.find(g=>g.id===item.group_id && !!g.private===!!item.private)?.name ?? "Ungrouped"}</small>{/if}</span
           >
           <span class="target" title={targetLabel(item,browsers)}
             >{targetLabel(item,browsers)}</span
           >{#if item.pinned}<span class="pinned-tag">Pinned</span>{/if}<span class="launch-icon"><ArrowUpRight size={12} /></span>
         </div>
-        <div class="row-actions">
+        {#if !selecting}<div class="row-actions">
         <button
           class="icon-button pin"
           class:pinned={item.pinned}
@@ -345,7 +347,7 @@
           aria-label={`Edit ${item.title}`}
           onclick={() => onedit(item)}><Pencil size={12} /></button
         >
-        </div>
+        </div>{/if}
       </div>
     {/if}
   {/snippet}
@@ -417,6 +419,8 @@
     border-color: var(--accent-alpha-33);
     box-shadow: inset 2px 0 0 var(--accent);
   }
+  .result.chosen {background:var(--accent-alpha-12);border-color:var(--accent-alpha-33);box-shadow:inset 2px 0 0 var(--accent);}
+  .result > input[type=checkbox] {flex-shrink:0;width:16px;height:16px;margin:0 5px;accent-color:var(--accent);}
   .result:hover {
     background: #ffffff0a;
   }

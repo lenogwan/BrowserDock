@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { onMount } from "svelte";
   import { buildTree, canNest } from "./trees.js";
   import { entryKey } from "./ids.js";
   import { governedRoutingMatches } from "./groups.js";
@@ -78,6 +79,8 @@
   });
   let hints = $state<string[]>([]);
   $effect(()=>{const id=target;hints=[];onprofiles(id).then(values=>{if(target===id)hints=values}).catch(()=>{});});
+  let titleInput = $state<HTMLInputElement>();
+  onMount(() => titleInput?.focus());
   let busy = $state(false);
   let error = $state("");
   let confirmDelete = $state(false);
@@ -97,6 +100,7 @@
     };
   }
   async function persist() {
+    if (busy) return;
     busy = true;
     error = "";
     try {
@@ -118,11 +122,12 @@
 </script>
 
 <form onsubmit={save} class="editor">
+  <fieldset disabled={busy} class="editor-fields" aria-label="Bookmark details">
   <span class="eyebrow"
     >{bookmark.private ? "PRIVATE BOOKMARK" : "BOOKMARK"}</span
   >
-  <h1>{bookmark.title ? "A place worth keeping." : "Save your next stop."}</h1>
-  <label>Title<input bind:value={title} required maxlength="512" /></label>
+  <h1>{bookmark.title ? "Edit bookmark" : "New bookmark"}</h1>
+  <label>Title<input bind:this={titleInput} bind:value={title} required maxlength="512" /></label>
   <label
     >URL<input
       bind:value={url}
@@ -170,6 +175,7 @@
       >{busy ? "Saving…" : "Save bookmark"}</button
     >
   </div>
+  {#if confirmDelete}<p class="muted" role="status">Delete this bookmark? You can undo it from the bookmark list.</p><button class="secondary" type="button" onclick={() => confirmDelete = false}>Keep bookmark</button>{/if}
   {#if bookmark.title}<button
       class="delete"
       type="button"
@@ -189,6 +195,7 @@
         }
       }}>{confirmDelete ? "Confirm deletion" : "Delete bookmark"}</button
     >{/if}
+  </fieldset>
 </form>
 
 <style>
@@ -198,6 +205,7 @@
   .follows { margin:-8px 0 0; }
   .follow-parent { justify-self:start; margin-top:-8px; padding:6px 9px; border:1px solid #ffffff1c; border-radius:7px; background:#ffffff0a; color:var(--text); font-size:10px; }
   .checkbox { display:flex; align-items:center; }
+  .editor-fields {border:0;padding:0;margin:0;min-width:0;display:grid;gap:14px;}
   .editor {
     padding: 12px;
     display: grid;

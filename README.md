@@ -99,8 +99,8 @@ Without this, URLs open as new tabs; with it, the dock finds and focuses already
 
 In **Settings → Companion**, choose the browsers you use. Installed or connected browsers appear automatically; deselect any you do not want in setup. **Ready** means all selected browsers are connected. Each browser has a **Test connection** button for a fresh local check without opening tabs. A passing test confirms that the connection responds, not that Windows can foreground the browser. Use **Configure or detect browsers** if one is missing; bulk pairing-file export is under advanced options.
 
-1. In BrowserDock, open **Settings → Connect your browsers**.
-2. Press **Stage companion folder**, then **Copy code** for a browser (or **Save pairing files** for all four) and **Open extensions**.
+1. In BrowserDock, open **Settings → Companion**.
+2. Press **Prepare companion folder**, use **Show companion folder** to find the files, then **Copy code** for a browser (or **Save pairing files** for all four) and **Open extensions**.
 3. In Chrome/Edge: enable Developer mode → **Load unpacked** → pick the staged `companion\chromium` folder. In Firefox/Mullvad: `about:debugging#/runtime/this-firefox` → **Load Temporary Add-on** → `companion\gecko\manifest.json`.
 4. On the companion options page press **Import pairing** (paste the code or pick the `browserdock-pairing-<browser>.json` file), then Save.
 
@@ -120,7 +120,7 @@ The expanded dock previews what **Enter** will do for the selected bookmark or U
 | Force new tab for a leaf bookmark or typed URL | `Shift+Enter` |
 | Expand / collapse a bookmark parent | Chevron or `Right Arrow` / `Left Arrow` |
 | Panic lock vault | `Esc` twice quickly, or `Ctrl+Alt+L` |
-| Vault | Click the lock icon or type `/vault` (min 8-char passphrase, numeric-only rejected) |
+| Vault | Click the lock icon or type `/vault` (new vaults need a nonnumeric passphrase of at least 8 characters; existing PINs still unlock) |
 
 ## Settings and bookmark organization
 
@@ -132,15 +132,15 @@ The expanded dock previews what **Enter** will do for the selected bookmark or U
 | Interface opacity | Background transparency, 30–100%; text remains solid | 100% |
 | Theme | Sage Mint, Nord Frost, Midnight Amber, Tokyo Violet or Rosé Pine | Sage Mint |
 
-Settings → Appearance previews theme and opacity until Save; Discard restores the saved appearance. The three visibility settings are independent.
+Settings → Appearance previews theme and opacity until Save; Discard restores the saved appearance. The three visibility settings are independent. Section labels wrap at narrow widths and stay visible while scrolling. Use Left/Right, Home or End when a section tab has focus.
 
 Create groups using **Add group**, move bookmarks by dragging or the editor's Group select, and use group editing controls to rename, reorder, or delete. Deleting a group keeps its bookmarks under Ungrouped. Search includes group names. Private groups are available only while the vault is unlocked.
 
-Use **Undo public action** or **Undo private action** after deleting or moving a bookmark. Undo restores one action, including affected descendants and order; later edits invalidate it. Private undo disappears when the vault locks. **Select bookmarks** lets you choose several rows and move them to a group or Ungrouped. Parents carry their descendants, and selections stay within one public/private scope.
+Use **Undo public action** or **Undo private action** after deleting or moving a bookmark. Undo restores one action, including affected descendants and order; later edits invalidate it. Private undo disappears when the vault locks. **Select bookmarks** lets you click rows or checkboxes to select them, then move them to a group or Ungrouped. Enter/Space toggles a focused selection row. The count includes sub-pages that move with a selected parent. Moving reports the destination and offers undo; selections stay within one public/private scope.
 
-**Settings → Library** imports bookmark HTML exported by Firefox, Mullvad, Chrome or Edge. Choose the browser and grouping, review the preview, then **Check import** and **Import bookmarks**. Exact duplicate destinations are skipped. Nested folders become groups using their immediate folder name; equal names merge. Unsupported URLs and oversized entries are reported and skipped. Imports are public and limited to 1000 links per file.
+**Settings → Library** imports bookmark HTML exported by Firefox, Mullvad, Chrome or Edge. Choose the browser and grouping, use **Check import** to see new bookmarks and duplicates, then **Import bookmarks**. Expand **Preview bookmarks** to inspect individual links. Changing an option requires checking again. Exact duplicate destinations are skipped. Nested folders become groups using their immediate folder name; equal names merge. Unsupported URLs and oversized entries are reported and skipped. Imports are public and limited to 1000 links per file.
 
-**Download library backup** saves public bookmarks/groups and the encrypted vault locally. Keep the original vault password: the backup cannot recover it. Machine settings, browser paths, routing rules and pairing credentials are excluded. To restore, choose the JSON backup, review its counts and confirm replacement. Replacing the vault is optional and off by default. Restore locks the vault and keeps the old config/vault in a local recovery folder whose path is shown afterward; interrupted restores recover on the next startup. If recovery remains pending after a failure, further saves, exports and vault unlocks are blocked until you restart BrowserDock. These recovery copies stay until you remove them manually.
+**Download library backup** saves public bookmarks/groups and the encrypted vault locally. Public bookmarks are readable in the backup; only vault content stays encrypted. Keep the original vault password: the backup cannot recover it. Machine settings, browser paths, routing rules and pairing credentials are excluded. To restore, choose the JSON backup, review the current-versus-backup counts and confirm replacement. Restore replaces the public library; it does not merge bookmarks. Replacing the vault is optional and off by default. Keep the Library view open until an operation finishes. Restore locks the vault and keeps the old config/vault in a local recovery folder whose path is shown afterward; interrupted restores recover on the next startup. If recovery remains pending after a failure, further saves, exports and vault unlocks are blocked until you restart BrowserDock. These recovery copies stay until you remove them manually.
 
 Nest bookmarks using the editor's **Parent** select or by holding a dragged row over another row's body briefly. Trees support children and grandchildren; the group follows the parent. Drop on a row's top edge to reorder siblings, or on a group header to return to root. Choose **Parent → None** to unnest using the keyboard or touch. Escape cancels dragging. Deleting a parent keeps its children under its former parent, or at root.
 
@@ -177,7 +177,7 @@ Companion v1.0.9 adds **Connection diagnostics** on its options page. If a brows
 | `cargo` not found | Install Rust MSVC toolchain and reopen the terminal |
 | `npm.ps1 cannot be loaded…` | PowerShell execution policy is blocking npm — use `npm.cmd …`, or `powershell -ExecutionPolicy Bypass`, or `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned` |
 | Summon shortcut does nothing | Another app owns it — change it in Settings (applies after restart); tray still works |
-| Companion shows disconnected | Dock not running, stale pairing, or extension disabled — re-copy the pairing code from Settings → Connect your browsers (if the dock logged a port change after a conflict, re-pair every companion to the new port) |
+| Companion shows disconnected | Dock not running, stale pairing, or extension disabled — re-copy the pairing code from Settings → Companion (if the dock logged a port change after a conflict, re-pair every companion to the new port) |
 | "Invalid config.json" on start | Edit was malformed — fix the JSON (the file is never overwritten); delete only as a last resort (regenerates with a fresh token, breaking pairings) |
 | Vault locked message right after 3 wrong tries | 30 s lockout by design; wait and retry |
 

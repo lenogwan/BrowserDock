@@ -47,6 +47,7 @@
   const step = $derived(!stagedDone ? 1 : !complete ? 2 : 3);
 
   async function run(key: string, task: () => Promise<string | void>) {
+    if (busy !== null) return;
     if (!native) {
       error = "Open the desktop app to pair companions.";
       return;
@@ -95,7 +96,7 @@
       );
       companionDir = out.dir;
       staged = true;
-      return `Companion staged for Load unpacked.`;
+      return `Companion files are ready. Show the folder, then load the matching extension in your browser.`;
     });
   }
   async function reveal(path: string) {
@@ -108,6 +109,7 @@
 </script>
 
 <section class="companion" aria-label="Companion setup">
+  <p class="hint intro">Connect the companion to switch to existing tabs, sync browser tab groups and save tabs from your browser.</p>
   <div class="progress" role="status">
     {#if !chosen.length}
       <strong>{available.length ? 'Choose a browser' : 'No browsers detected'}</strong><span>Select the browsers you want to connect.</span>
@@ -115,11 +117,13 @@
       <strong>Ready ✓</strong><span>All selected browsers connected.</span>
     {:else}
       <strong>Step {step} of 3</strong><span>
-        {connectedCount} of {chosen.length} selected browsers connected{stagedDone ? "" : " · start with staging below"}.
+        {connectedCount} of {chosen.length} selected browsers connected{stagedDone ? "" : " · prepare the files below"}.
       </span>
     {/if}
   </div>
   {#if companionError}<p class="error" role="alert">{companionError}</p>{/if}
+  {#if error}<p class="error" role="alert">{error}</p>{/if}
+  {#if message}<p class="notice" role="status">{message}</p>{/if}
   <fieldset class="browser-choices">
     <legend>Browsers you use</legend>
     {#each available as browser}<label><input type="checkbox" checked={!excluded.includes(browser.id)} onchange={(event) => choose(browser.id, event.currentTarget.checked)} />{browser.name}</label>{/each}
@@ -128,15 +132,14 @@
 
   {#if chosen.length}<ol class="steps">
     <li class:done={stagedDone} aria-current={step === 1 ? "step" : undefined}>
-      <div class="step-head"><span class="n">{stagedDone ? "✓" : "1"}</span><strong>Stage the companion folder</strong></div>
+      <div class="step-head"><span class="n">{stagedDone ? "✓" : "1"}</span><strong>Get the companion files</strong></div>
       {#if !complete}
-        <p>Bundled with the installer — gives Load unpacked a permanent folder.</p>
+        <p>Prepare a permanent folder from the files bundled with BrowserDock.</p>
         <button class="secondary" disabled={busy !== null} onclick={stageCompanion}>
-          {busy === "stage" ? "Staging…" : "Stage companion folder"}
+          {busy === "stage" ? "Preparing…" : "Prepare companion folder"}
         </button>
-      {:else if companionDir}
-        <p>Staged at {companionDir} <button class="link" onclick={() => reveal(companionDir)}>Show folder</button></p>
       {/if}
+      {#if companionDir}<p class="folder-path">{companionDir}</p><button class="secondary" onclick={() => reveal(companionDir)}>Show companion folder</button>{/if}
     </li>
     <li class:done={complete} class:current={step === 2} aria-current={step === 2 ? "step" : undefined}>
       <div class="step-head"><span class="n">{complete ? "✓" : "2"}</span><strong>Connect your selected browsers</strong></div>
@@ -176,8 +179,9 @@
           </li>
         {/each}
       </ul>
-      {#if chosen.some(browser => ['chrome', 'edge'].includes(browser.id))}<p class="hint">Chrome/Edge: Developer mode → Load unpacked → chromium folder, then import your pairing code.</p>{/if}
-      {#if chosen.some(browser => ['firefox', 'mullvad'].includes(browser.id))}<p class="hint">Firefox/Mullvad: Load Temporary Add-on → gecko/manifest.json, then import your pairing code. Temporary installs must be loaded again after a browser restart.</p>{/if}
+      {#if chosen.some(browser => ['chrome', 'edge'].includes(browser.id))}<p class="hint">Chrome/Edge: Open extensions → Developer mode → Load unpacked → choose the chromium folder.</p>{/if}
+      {#if chosen.some(browser => ['firefox', 'mullvad'].includes(browser.id))}<p class="hint">Firefox/Mullvad: Open extensions → Load Temporary Add-on → choose gecko/manifest.json. Temporary installs must be loaded again after a browser restart.</p>{/if}
+      <p class="hint">After installing: Copy code for that browser → open the companion toolbar popup → Connection settings → paste the code into Import.</p>
     </li>
     <li class:done={complete} class:current={step === 3} aria-current={step === 3 ? "step" : undefined}>
       <div class="step-head"><span class="n">{complete ? "✓" : "3"}</span><strong>Verify</strong></div>
@@ -185,15 +189,12 @@
     </li>
   </ol>{/if}
 
-  {#if error}<p class="error" role="alert">{error}</p>{/if}
-  {#if message}<p class="notice" role="status">{message}</p>{/if}
-
   <details class="limits">
     <summary>Why isn't this fully automatic?</summary>
     <p>
       Chrome, Edge and Firefox block silent extension installs to protect you
       from malware. The installer bundles the companion and pre-fills everything,
-      but each browser still needs two clicks: <em>Load unpacked</em> (Chrome/Edge
+      but each browser needs your permission: <em>Load unpacked</em> (Chrome/Edge
       developer mode) or <em>Load Temporary Add-on</em> (Firefox/Mullvad), then
       <em>Import</em> on the companion page. Permanent Firefox installs additionally
       need a Mozilla-signed package.
@@ -210,6 +211,8 @@
     display: grid;
     gap: 12px;
   }
+  .intro {font-size:12px;}
+  .folder-path {overflow-wrap:anywhere;}
   .progress {
     display: flex;
     align-items: baseline;

@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onDestroy } from "svelte";
+  import { onDestroy, onMount } from "svelte";
   import { LockKeyhole, ShieldCheck } from "lucide-svelte";
   import type { VaultStatus } from "../../shared/types";
   let {
@@ -9,6 +9,8 @@
     status: VaultStatus;
     onsubmit: (secret: string, create: boolean) => Promise<void>;
   } = $props();
+  let secretInput = $state<HTMLInputElement>();
+  onMount(() => secretInput?.focus());
   let secret = $state("");
   let confirm = $state("");
   let busy = $state(false);
@@ -20,6 +22,7 @@
   });
   async function submit(e: SubmitEvent) {
     e.preventDefault();
+    if (busy || status.retry_after_seconds > 0) return;
     error = "";
     if (!status.exists && secret !== confirm) {
       error = "Passphrases do not match.";
@@ -53,10 +56,11 @@
   </p>
   <label
     >Passphrase<input
+      bind:this={secretInput}
       type="password"
       bind:value={secret}
       autocomplete={status.exists ? "current-password" : "new-password"}
-      minlength={8}
+      minlength={status.exists ? undefined : 8}
       maxlength={1024}
       aria-describedby="vault-rule"
       required
@@ -68,6 +72,7 @@
         type="password"
         bind:value={confirm}
         autocomplete="new-password"
+        maxlength={1024}
         required
         disabled={busy}
       /></label

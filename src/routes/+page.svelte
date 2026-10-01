@@ -73,6 +73,7 @@
     reportError: (cause) => { error = String(cause); },
   };
   let moveGroup = $state("");
+  let libraryBusy = $state(false);
   let busy = $state(false),
     input = $state<HTMLInputElement | undefined>(undefined);
   let mounted = true,
@@ -96,6 +97,18 @@
   );
   const installedBrowsers = $derived(installedDockBrowsers(browsers));
   const allTree = $derived(buildTree(all));
+  const selectionCount = $derived.by(() => {
+    const ids = new Set(bookmarkController.selectedIds);
+    return all.filter(item => {
+      if (!!item.private !== bookmarkController.selectionPrivate) return false;
+      let node = allTree.index.get(entryKey(item));
+      while (node) {
+        if (ids.has(node.item.id)) return true;
+        node = node.parent ?? undefined;
+      }
+      return false;
+    }).length;
+  });
   const visibleGroups = $derived(view === "vault" ? vaultController.groups : [...bookmarkController.groups, ...vaultController.groups]);
   const matched = $derived(searchBookmarks(all, query, visibleGroups));
   // Open-tab lookup is precomputed once per companion snapshot so row renders
@@ -124,7 +137,7 @@
   });
   const url = $derived(directUrl(query));
   const selectedBookmark = $derived(url && selected === 0 ? undefined : keyboardResults[selected - (url ? 1 : 0)]);
-  const previewUrl = $derived(view !== 'settings' && !bookmarkController.editing && !bookmarkController.editingGroup && !(view === 'vault' && vaultController.status.locked) ? selectedBookmark?.url ?? url : null);
+  const previewUrl = $derived(view !== 'settings' && !bookmarkController.selecting && !bookmarkController.editing && !bookmarkController.editingGroup && !(view === 'vault' && vaultController.status.locked) ? selectedBookmark?.url ?? url : null);
   const previewKey = $derived(JSON.stringify([previewUrl, selectedBookmark?.id, selectedBookmark?.private, override, vaultController.generation, browsers]));
   const previewDetails = $derived(resolvedRoute?.key === previewKey ? resolvedRoute.details : null);
   const route = $derived(previewDetails ? [previewDetails.browser_id, previewDetails.profile || previewDetails.container].filter(Boolean).join(' · ') : 'Resolving…');
@@ -207,8 +220,10 @@
   $effect(() => {
     if (query === "/vault") {
       query = "";
-      view = "vault";
-      windowController.expanded = true;
+      if (requestLeave()) {
+        view = "vault";
+        windowController.expanded = true;
+      }
     }
     if (query === "/open") {
       query = "";
@@ -241,10 +256,9 @@
       invokeCommand("vault_activity").catch(() => {});
     }
   }
-  // Non-throwing by design: every caller (mount, summon, poll, save flows)
-  // would otherwise need its own catch, and one missed site turns a single
-  // IPC failure into an unhandled rejection. Failures surface via `error`.
-  async function loadPublic() {
+  // Background callers report errors here. Library operations opt into a
+  // rejection so they can explain that the write succeeded but refresh failed.
+  async function loadPublic(propagate = false) {
     try {
       const data = await invokeCommand("get_dock_data");
       if (!mounted) return;
@@ -257,6 +271,7 @@
       settingsController.load(data.settings);
       if (data.warnings?.length) error = data.warnings.join(" ");
     } catch (e) {
+      if (propagate) throw e;
       if (mounted) error = String(e);
     }
   }
@@ -444,6 +459,17 @@
     activity();
     if (e.key === "Escape") {
       e.preventDefault();
+      // Hide natively without unmounting an active Library operation. Sending
+      // dock_escape also preserves the backend's double-Escape panic lock.
+      if (libraryBusy) {
+        clearPrivate(false);
+        windowController.dockVisible = false;
+        if (windowController.native) {
+          try { await invokeCommand("dock_escape"); }
+          catch (cause) { windowController.dockVisible = true; error = String(cause); }
+        }
+        return;
+      }
       if (!requestLeave()) return;
       clearPrivate(false);
       view = "search";
@@ -467,6 +493,8 @@
     }
     if (bookmarkController.editing || bookmarkController.editingGroup || view === "settings" || (view === "vault" && vaultController.status.locked))
       return;
+    const target = e.target as HTMLElement;
+    if (target !== input && target?.closest?.('input, select, button') && !target.closest('.row-open, .tree-chevron')) return;
     if (!query.trim() && (e.key === "ArrowRight" || e.key === "ArrowLeft")) {
       const rowKey = (e.target as HTMLElement)?.closest?.('[data-vkey]')?.getAttribute('data-vkey');
       const item = rowKey ? allTree.index.get(rowKey)?.item : keyboardResults[selected - (url ? 1 : 0)];
@@ -487,6 +515,10 @@
       navTick++;
     }
     if (e.key === "Enter" && (e.target === input || (e.target as HTMLElement)?.closest?.('.row-open'))) {
+      if (bookmarkController.selecting) {
+        if (e.target === input) e.preventDefault();
+        return;
+      }
       e.preventDefault();
       await open(
         url && selected === 0 ? undefined : keyboardResults[selected - (url ? 1 : 0)],
@@ -501,6 +533,23 @@
   async function saveBookmark(bookmark: Bookmark) {
     if (!windowController.native) throw "Open the desktop app to save bookmarks.";
     await bookmarkController.saveBookmark(bookmark, bookmarkContext);
+  }
+  async function undoOrganization(privateScope: boolean) {
+    const current = vaultController.generation;
+    error = '';
+    try {
+      await bookmarkController.undo(privateScope, bookmarkContext);
+      if (!privateScope || current === vaultController.generation) notice = `Last ${privateScope ? 'private' : 'public'} move or deletion undone.`;
+    } catch (cause) { if (!privateScope || current === vaultController.generation) error = String(cause); }
+  }
+  async function moveSelection() {
+    const count = selectionCount, current = vaultController.generation, privateScope = bookmarkController.selectionPrivate;
+    const destination = (privateScope ? vaultController.groups : bookmarkController.groups).find(group => group.id === moveGroup)?.name ?? 'Ungrouped';
+    error = '';
+    try {
+      await bookmarkController.moveSelected(moveGroup || null, bookmarkContext);
+      if (!privateScope || current === vaultController.generation) notice = `Moved ${count} bookmark${count === 1 ? '' : 's'} to ${destination}. Undo is available.`;
+    } catch (cause) { if (!privateScope || current === vaultController.generation) error = String(cause); }
   }
   async function deleteBookmark() {
     await bookmarkController.deleteBookmark(bookmarkContext);
@@ -537,6 +586,7 @@
   // Dirty settings are never dropped silently: first exit attempt arms (with
   // a toast), the second discards. Applies to Back, Esc, and tab switches.
   function requestLeave(): boolean {
+    if (libraryBusy) { notice = "Wait for the library operation to finish before leaving this view."; return false; }
     const result = settingsController.requestLeave(view === "settings");
     if (result.notice !== null) notice = result.notice;
     return result.allow;
@@ -617,11 +667,13 @@
     windowController.strip = false;
     windowController.dockVisible = true;
     windowController.expanded = true;
-    view = showSettings ? "settings" : "search";
-    bookmarkController.editing = null;
-    bookmarkController.editingGroup = null;
+    if (!libraryBusy) {
+      view = showSettings ? "settings" : "search";
+      bookmarkController.editing = null;
+      bookmarkController.editingGroup = null;
+    }
     await tick();
-    if (!showSettings) input?.focus();
+    if (!showSettings && !libraryBusy) input?.focus();
     if (windowController.native) {
       // Event entry points call `void summon()`; never let an IPC failure
       // escape as an unhandled rejection.
@@ -743,6 +795,7 @@
         aria-label={vaultController.status.locked ? "Open vault" : "Lock vault"}
         onclick={() => {
           if (vaultController.status.locked) {
+            if (!requestLeave()) return;
             view = "vault";
             windowController.expanded = true;
           } else void lock();
@@ -757,6 +810,7 @@
         <nav>
           {#if bookmarkController.editing || bookmarkController.editingGroup || view === "settings"}<button
               class="back"
+              disabled={libraryBusy}
               onclick={backFromSettings}
               title={view === "settings" && settingsController.dirty ? "Click again to discard unsaved changes" : "Back"}
               >{#if view === "settings" && settingsController.dirty && settingsController.confirmBack}Discard changes?{:else}<ChevronLeft size={14} /> Back{/if}</button
@@ -765,12 +819,12 @@
               <button
                 class:current={view === "search"}
                 aria-pressed={view === "search"}
-                onclick={() => (view = "search")}>All bookmarks</button
+                onclick={() => { bookmarkController.cancelSelection(); moveGroup = ""; view = "search"; }}>All bookmarks</button
               ><button
                 class:current={view === "vault"}
                 aria-pressed={view === "vault"}
                 title={vaultController.status.locked ? "Vault locked" : "Vault unlocked"}
-                onclick={() => (view = "vault")}
+                onclick={() => { bookmarkController.cancelSelection(); moveGroup = ""; view = "vault"; }}
                 >Vault <span class="tab-dot" class:live={!vaultController.status.locked}
                 ></span></button
               >
@@ -796,6 +850,7 @@
               class="icon-button"
               title="Collapse dock"
               aria-label="Collapse dock"
+              disabled={libraryBusy}
               onclick={() => {
                 bookmarkController.editing = null;
                 bookmarkController.editingGroup = null;
@@ -824,7 +879,9 @@
               />{/key}
           {:else if view === "settings"}<SettingsView
               publicGroups={bookmarkController.groups}
-              onlibrarychange={async () => { bookmarkController.publicUndo = false; bookmarkController.cancelSelection(); await loadPublic(); }}
+              publicCount={bookmarkController.bookmarks.length}
+              bind:libraryBusy
+              onlibrarychange={async () => { bookmarkController.publicUndo = false; bookmarkController.cancelSelection(); await loadPublic(true); }}
               settings={settingsController.settings}
               {browsers}
               instances={companion.instances}
@@ -869,7 +926,7 @@
                 ><span class="result-count">{results.length}</span></span
               >
             </div>
-            {#if url}<button
+            {#if url && !bookmarkController.selecting}<button
                 class="url-result"
                 class:active={selected === 0}
                 onfocus={() => selected = 0}
@@ -879,17 +936,17 @@
                 ><span class="route-name" title={selected === 0 ? route : 'Select this URL to preview its destination'}>{selected === 0 ? route : 'URL routing'}</span></button
               >{/if}
             <div class="organization-actions">
-              <button class="secondary" disabled={bookmarkController.moving} onclick={() => { if (bookmarkController.selecting) bookmarkController.cancelSelection(); else bookmarkController.selecting = true; }}>{bookmarkController.selecting ? 'Cancel selection' : 'Select bookmarks'}</button>
-              {#if bookmarkController.publicUndo && view !== 'vault'}<button class="secondary" disabled={bookmarkController.moving} onclick={() => bookmarkController.undo(false, bookmarkContext).catch(e => error = String(e))}>Undo public action</button>{/if}
-              {#if bookmarkController.privateUndo}<button class="secondary" disabled={bookmarkController.moving} onclick={() => bookmarkController.undo(true, bookmarkContext).catch(e => error = String(e))}>Undo private action</button>{/if}
+              <button class="secondary" disabled={bookmarkController.moving} onclick={() => { moveGroup = ''; if (bookmarkController.selecting) bookmarkController.cancelSelection(); else { bookmarkController.selectionPrivate = view === 'vault'; bookmarkController.selecting = true; } }}>{bookmarkController.selecting ? 'Cancel selection' : 'Select bookmarks'}</button>
+              {#if bookmarkController.publicUndo && view !== 'vault'}<button class="secondary" disabled={bookmarkController.moving} onclick={() => undoOrganization(false)}>Undo public action</button>{/if}
+              {#if bookmarkController.privateUndo}<button class="secondary" disabled={bookmarkController.moving} onclick={() => undoOrganization(true)}>Undo private action</button>{/if}
               {#if bookmarkController.selecting}
-                <small>{bookmarkController.selectedIds.length} selected · {bookmarkController.selectionPrivate ? 'Private' : 'Public'}</small>
-                <select aria-label="Move selected bookmarks to group" bind:value={moveGroup} disabled={bookmarkController.moving}>
+                <small class="selection-count" role="status">{bookmarkController.selectedIds.length} selected · {bookmarkController.selectionPrivate ? 'Private' : 'Public'}{selectionCount > bookmarkController.selectedIds.length ? ` · ${selectionCount} including sub-pages` : ''}</small>
+                <label class="selection-destination">Move to group<select aria-label="Move selected bookmarks to group" bind:value={moveGroup} disabled={bookmarkController.moving}>
                   <option value="">Ungrouped</option>
                   {#each (bookmarkController.selectionPrivate ? vaultController.groups : bookmarkController.groups) as group}<option value={group.id}>{group.name}</option>{/each}
-                </select>
-                <button class="primary" disabled={!bookmarkController.selectedIds.length || bookmarkController.moving} onclick={() => bookmarkController.moveSelected(moveGroup || null, bookmarkContext).catch(e => error = String(e))}>Move selected</button>
-                <small>Selecting in another scope starts a new selection. Descendants move with their selected parent.</small>
+                </select></label>
+                <button class="primary" disabled={!bookmarkController.selectedIds.length || bookmarkController.moving} onclick={moveSelection}>{bookmarkController.moving ? 'Moving…' : 'Move selected'}</button>
+                <small class="selection-help">Click a row or checkbox to select. Sub-pages move with their parent. Selecting a private bookmark clears a public selection, and vice versa.</small>
               {/if}
             </div>
             <BookmarkList
@@ -911,7 +968,7 @@
               onopengroup={(group)=>groupAction(group)}
               onclosegroup={(group)=>groupAction(group,true)}
               instances={companion.instances}
-              {busy}
+              busy={busy || bookmarkController.moving}
               ontoggle={(group)=>saveGroup({...group,collapsed:!group.collapsed},false).catch(e=>error=String(e))}
               onmove={move}
               {openTabs}
@@ -964,8 +1021,11 @@
               onclick={() => (override = null)}>{override}<X size={10} aria-hidden="true" /></button>{/if}
           </div>
           <div class="keyboard-hints" aria-label="Keyboard shortcuts">
-            <span><kbd>↑↓</kbd> select</span><span><kbd>Enter</kbd> open</span>
-            <span><kbd>Shift+↵</kbd> subtree / new tab</span><span><kbd>Esc</kbd> hide</span>
+            {#if libraryBusy}<span>Library operation in progress</span><span><kbd>Esc</kbd> hide</span>
+            {:else if view === 'settings' || bookmarkController.editing || bookmarkController.editingGroup || (view === 'vault' && vaultController.status.locked)}<span><kbd>Tab</kbd> next control</span><span><kbd>Esc</kbd> hide</span>
+            {:else if bookmarkController.selecting}<span><kbd>Tab</kbd> next bookmark</span><span><kbd>Space</kbd> select</span><span><kbd>Esc</kbd> hide</span>
+            {:else}<span><kbd>↑↓</kbd> select</span><span><kbd>Enter</kbd> open</span>
+            <span><kbd>Shift+↵</kbd> subtree / new tab</span><span><kbd>Esc</kbd> hide</span>{/if}
           </div>
         </footer>
       </div>
@@ -977,7 +1037,10 @@
 <style>
   .organization-actions {display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin:6px 0;}
   .organization-actions small {color:var(--muted);font-size:10px;}
-  .organization-actions button,.organization-actions select {font-size:11px;padding:5px 7px;min-height:28px;}
+  .organization-actions button {font-size:11px;padding:7px 9px;min-height:32px;}
+  .organization-actions .selection-destination {flex:1;min-width:120px;gap:4px;font-size:10px;}
+  .organization-actions select {font-size:11px;padding:7px;min-height:32px;}
+  .selection-count,.selection-help {width:100%;line-height:1.5;}
   .launch-preview {display:flex;gap:8px;align-items:baseline;padding:8px 10px;color:var(--muted);font-size:11px;border-bottom:1px solid var(--accent-alpha-12);}
   .launch-preview span {min-width:0;overflow-wrap:anywhere;}
   .launch-preview kbd {flex-shrink:0;color:var(--text);}

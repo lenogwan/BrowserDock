@@ -99,11 +99,11 @@ try {
   await page.getByText('2 eligible bookmarks; 1 unsupported or oversized entries skipped.', { exact: true }).waitFor();
   assert.equal(await page.evaluate(() => window.importExecuted), undefined);
   await page.getByRole('button', { name: 'Check import', exact: true }).click();
-  await page.getByText('1 new bookmarks, 1 duplicates, 1 new groups.', { exact: true }).waitFor();
+  await page.getByText('1 new bookmark, 1 duplicate, 1 new group.', { exact: true }).waitFor();
   const imported = await page.evaluate(() => window.testState.calls.find(c => c.cmd === 'import_bookmarks'));
   assert.equal(imported.args.items[0].folder, 'Work');
   await page.getByRole('button', { name: 'Import bookmarks', exact: true }).click();
-  await page.getByText('Imported 1 bookmarks; skipped 1 duplicates.', { exact: true }).waitFor();
+  await page.getByText('Imported 1 bookmark; skipped 1 duplicate.', { exact: true }).waitFor();
   const downloadWait = page.waitForEvent('download');
   await page.getByRole('button', { name: 'Download library backup', exact: true }).click();
   assert.match((await downloadWait).suggestedFilename(), /^browserdock-library-.*\.json$/);

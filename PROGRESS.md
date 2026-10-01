@@ -1,6 +1,20 @@
 # BrowserDock current status
 
-Current implementation reviewed and hardened 2026-10-02 for forgiving organization, portable library import/backup, companion bookmark capture, launch previews, browser-aware setup and companion background recovery. Earlier records below remain historical evidence.
+Current implementation reviewed and hardened 2026-10-02, including a rendered UI/UX pass for forgiving organization, portable library import/backup, companion setup and vault controls. App version: v0.5.0; companion: v1.0.11. Earlier records below remain historical evidence.
+
+## v0.5.0 release checks (2026-10-02)
+
+- App and core package/lock versions are synchronized to 0.5.0; companion remains 1.0.11. This build includes organization undo/multi-select, browser HTML import, encrypted-vault library backup/restore, companion capture and the UI/UX fixes below.
+- Passed after the version update: 116 Rust core tests, 44 UI tests, 107 extension tests, extension regeneration, Svelte check with zero diagnostics, production frontend build and Windows MSVC-target app check. The Windows check retains the existing GNU compiler warning. Five rendered smokes passed in the UI review; `git diff --check` passes.
+- Native Windows acceptance, installer validation and memory measurement remain pending; cross-compilation and mocked UI tests do not establish release acceptance. The `v*` tag workflow builds the actual Windows artifacts.
+
+## UI/UX review (2026-10-02)
+
+- Selection rows toggle instead of launching; counts include moving descendants, dropdown arrows retain native behavior, and move/undo feedback states the outcome. Editors focus their first field, support cancelling deletion confirmation, disable fields while saving and guard duplicate submissions. Existing short vault PINs reach backend validation; creation strength rules are unchanged.
+- Library separates Import, Backup and Restore, keeps long previews expandable, explains duplicate-only imports and readable public backup content, compares current/backup counts and states default vault retention. Changing vault replacement renews confirmation. Same-file selection works, busy operations retain their view while Escape preserves hide/panic handling, feedback receives focus, and successful restore clears stale import drafts. Refresh errors distinguish a saved operation from a rejected write.
+- Settings tabs wrap at narrow widths, stay visible while scrolling and support Home/End. Companion setup immediately exposes prepared files and separates install/pairing instructions; footer hints reflect the current view. Details: [UI/UX review](docs/ui-ux-review.md).
+- Passed: 44 UI tests, Svelte check with zero diagnostics, production build, new UX smoke plus organization/portable, browser, tree/theme and tab-group rendered smokes, and `git diff --check`. Screenshots at 280/400/800 px were inspected. Rust/extension source and protocols are unchanged; their suites were not rerun for this UI pass.
+- Rendered tests mock desktop IPC. Native Windows rendering/DPI, screen readers, actual file/download dialogs, companion install/recovery, foregrounding and memory remain acceptance work; no end-user usability study was conducted.
 
 ## Code review fixes (2026-10-02)
 

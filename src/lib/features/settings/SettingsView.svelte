@@ -18,7 +18,7 @@
   const TIMEOUT_PRESETS = [5, 15, 30, 60];
 
   let {
-    publicGroups = [], onlibrarychange,
+    publicGroups = [], publicCount = 0, onlibrarychange, libraryBusy = $bindable(false),
     settings,
     browsers = [],
     instances = [],
@@ -37,7 +37,7 @@
     onsizepreview,
     onsizecancel,
   }: {
-    publicGroups?: Group[]; onlibrarychange: () => Promise<void>;
+    publicGroups?: Group[]; publicCount?: number; onlibrarychange: () => Promise<void>; libraryBusy?: boolean;
     settings: Settings;
     browsers?: Browser[];
     instances?: InstanceDigest[];
@@ -164,17 +164,19 @@
         aria-selected={tab === t.id}
         tabindex={tab === t.id ? 0 : -1}
         class:current={tab === t.id}
+        disabled={busy || libraryBusy}
         onclick={() => (tab = t.id)}
         onkeydown={(e) => {
-          if (e.key !== "ArrowRight" && e.key !== "ArrowLeft") return;
+          if (!["ArrowRight", "ArrowLeft", "Home", "End"].includes(e.key) || busy || libraryBusy) return;
           e.preventDefault();
-          const next = (i + (e.key === "ArrowRight" ? 1 : -1) + TABS.length) % TABS.length;
+          const next = e.key === "Home" ? 0 : e.key === "End" ? TABS.length - 1 : (i + (e.key === "ArrowRight" ? 1 : -1) + TABS.length) % TABS.length;
           tab = TABS[next].id;
           document.getElementById(`settings-tab-${TABS[next].id}`)?.focus();
         }}>{t.label}</button
       >{/each}
   </div>
 
+  <fieldset class="settings-controls" disabled={busy} aria-label="Settings controls">
   {#if tab === "appearance"}
     <div class="tab-body" role="tabpanel" id="settings-panel" aria-labelledby={`settings-tab-${tab}`} tabindex="0">
       <fieldset class="theme-section">
@@ -294,12 +296,14 @@
       <BrowserPanel {browsers} {instances} onsave={onbrowser} {onredetect} {onprofiles} />
     </div>
   {:else if tab === "library"}
-    <div class="tab-body" role="tabpanel" id="settings-panel" aria-labelledby={`settings-tab-${tab}`} tabindex="0"><PortableLibrary {browsers} groups={publicGroups} {native} onchange={onlibrarychange} /></div>
+    <div class="tab-body" role="tabpanel" id="settings-panel" aria-labelledby={`settings-tab-${tab}`} tabindex="0"><PortableLibrary {browsers} groups={publicGroups} {publicCount} {native} onchange={onlibrarychange} bind:busy={libraryBusy} /></div>
   {:else}
     <div class="tab-body" role="tabpanel" id="settings-panel" aria-labelledby={`settings-tab-${tab}`} tabindex="0">
       <CompanionSetup {browsers} {instances} {reconnecting} {companionError} {native} onconfigure={() => tab = 'browsers'} />
     </div>
   {/if}
+
+  </fieldset>
 
   {#if error}<p class="error" role="alert">{error}</p>{/if}
   {#if restartNotice}<p class="warning" role="alert">{restartNotice}</p>{/if}
@@ -308,8 +312,8 @@
   {#if dirty}<div class="dirty-bar" role="region" aria-label="Unsaved changes">
       <span>Unsaved changes</span>
       <span class="dirty-actions">
-        <button type="button" class="secondary small" onclick={discard}>Discard</button>
-        <button type="button" class="primary small" disabled={busy} onclick={save}>
+        <button type="button" class="secondary small" disabled={busy || libraryBusy} onclick={discard}>Discard</button>
+        <button type="button" class="primary small" disabled={busy || libraryBusy} onclick={save}>
           {busy ? "Saving…" : "Save"}
         </button>
       </span>
@@ -317,6 +321,7 @@
 </div>
 
 <style>
+  .settings-controls {border:0;padding:0;margin:0;min-width:0;display:grid;gap:12px;}
   .theme-section {min-width:0;border:0;padding:0;margin:0;}
   .theme-section legend {font-size:11px;color:var(--text);margin-bottom:7px;}
   .theme-grid {display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:6px;}
@@ -342,10 +347,13 @@
     margin: -6px 0 0;
   }
   .tabs {
+    position: sticky;
+    top: 0;
+    z-index: 2;
     display: flex;
     min-width: 0;
     gap: 4px;
-    background: #ffffff06;
+    background: rgb(var(--surface-rgb) / 0.98);
     border: 1px solid #ffffff0e;
     border-radius: 10px;
     padding: 3px;
@@ -367,6 +375,11 @@
     background: #ffffff0e;
     color: var(--text);
   }
+  @media (max-width: 380px) {
+    .tabs {flex-wrap:wrap;}
+    .tabs button {flex:1 1 30%;min-height:32px;}
+  }
+  p.muted {font-size:11px;color:var(--muted);line-height:1.5;}
   .tab-body {
     display: grid;
     min-width: 0;
