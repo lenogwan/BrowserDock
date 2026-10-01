@@ -19,21 +19,21 @@ export function stripModuleSyntax(source, file) {
 }
 export async function build(output = root) {
   const modules = {};
-  for (const name of ['protocol', 'inventory', 'actions', 'core']) {
+  for (const name of ['protocol', 'inventory', 'actions', 'capture', 'core']) {
     modules[name] = stripModuleSyntax(await readFile(join(root, `src/${name}.js`), 'utf8'), `src/${name}.js`);
   }
-  const background = ['protocol', 'inventory', 'actions', 'core'].map(name => modules[name]).join('\n') + '\n' + await readFile(join(root, 'src/background.js'), 'utf8');
+  const background = ['protocol', 'inventory', 'actions', 'capture', 'core'].map(name => modules[name]).join('\n') + '\n' + await readFile(join(root, 'src/background.js'), 'utf8');
   const options = modules.protocol + '\n' + await readFile(join(root, 'src/options.js'), 'utf8');
   const common = {
     manifest_version: 3,
     name: 'BrowserDock Companion',
-    version: '1.0.8',
+    version: '1.0.11',
     description: 'Connect this browser to BrowserDock on your computer to focus or open tabs.',
     permissions: ['tabs', 'storage', 'alarms', 'tabGroups'],
     host_permissions: ['http://127.0.0.1/*'],
     incognito: 'spanning',
     options_ui: { page: 'options.html', open_in_tab: true },
-    action: { default_title: 'Pair with BrowserDock' },
+    action: { default_title: 'Save this tab to BrowserDock', default_popup: 'capture.html' },
     content_security_policy: { extension_pages: "default-src 'self'; script-src 'self'; style-src 'self'; object-src 'none'; connect-src ws://127.0.0.1:*; base-uri 'none'; form-action 'none'" }
   };
   for (const flavor of ['chromium', 'gecko']) {
@@ -55,7 +55,7 @@ export async function build(output = root) {
     await writeFile(join(directory, 'manifest.json'), JSON.stringify(manifest, null, 2) + '\n');
     await writeFile(join(directory, 'background.js'), background);
     await writeFile(join(directory, 'options.js'), options);
-    for (const file of ['options.html', 'options.css']) await copyFile(join(root, 'src', file), join(directory, file));
+    for (const file of ['options.html', 'options.css', 'capture.html', 'capture.css', 'capture-popup.js']) await copyFile(join(root, 'src', file), join(directory, file));
   }
 }
 

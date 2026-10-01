@@ -4,8 +4,18 @@ import type { Bookmark, Browser, Group, InstanceDigest, Settings, VaultStatus, W
 export type DockData = { bookmarks: Bookmark[]; groups?: Group[]; browsers: Browser[]; settings: Settings; warnings: string[] };
 export type CompanionDigest = { instances: InstanceDigest[]; error: string | null };
 export type GroupActionResult = { processed: number; note?: string };
+export type RouteDetails = { browser_id: string; profile?: string | null; container?: string | null; incognito?: boolean };
 
+export type ImportItem = { title: string; url: string; folder: string | null };
+export type ImportSummary = { added: number; duplicates: number; groups_added: number };
+export type BackupPreview = { bookmarks: number; groups: number; has_vault: boolean };
 type Commands = {
+  move_bookmarks: [{ ids: string[]; groupId: string | null; private: boolean }, void];
+  undo_organization: [{ private: boolean }, void];
+  import_bookmarks: [{ items: ImportItem[]; browserId: string; groupId: string | null; folders: boolean; preview: boolean }, ImportSummary];
+  backup_export: [undefined, string];
+  backup_preview: [{ text: string }, BackupPreview];
+  backup_restore: [{ text: string; restoreVault: boolean }, string];
   dock_resize: [{ height: number }, void];
   dock_set_size: [WindowSize, void];
   dock_commit_size: [undefined, void];
@@ -14,7 +24,7 @@ type Commands = {
   dock_escape: [undefined, void];
   dock_drag_finished: [undefined, boolean];
   dock_save_position: [{ snap: boolean }, void];
-  route_details: [{ url: string; browserId: string | null }, { browser_id: string; profile?: string; container?: string }];
+  route_details: [{ url: string; browserId: string | null; bookmarkId?: string | null; bookmarkPrivate?: boolean }, RouteDetails];
   vault_activity: [undefined, void];
   vault_status: [undefined, VaultStatus];
   vault_list: [undefined, Bookmark[] | { bookmarks: Bookmark[]; groups: Group[] }];
@@ -27,6 +37,7 @@ type Commands = {
   close_group_tabs: [{ groupId: string; private: boolean }, GroupActionResult];
   close_tab: [{ url: string; browserId: string; bookmarkId: string; bookmarkPrivate: boolean }, { browser_id: string; result: string; closed: number; note?: string }];
   companion_tabs_digest: [undefined, CompanionDigest];
+  companion_test_connection: [{ browserId: string }, number];
   save_bookmark: [{ bookmark: Bookmark; private: boolean }, void];
   delete_bookmark: [{ id: string; private: boolean }, void];
   save_settings: [{ settings: Settings }, { notice: string }];

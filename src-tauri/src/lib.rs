@@ -209,6 +209,12 @@ pub fn run() {
             organization::save_group,
             organization::delete_group,
             organization::move_bookmark,
+            organization::move_bookmarks,
+            organization::undo_organization,
+            commands::portable::import_bookmarks,
+            commands::portable::backup_export,
+            commands::portable::backup_preview,
+            commands::portable::backup_restore,
             organization::save_browser,
             commands::dispatch::open_url,
             commands::dispatch::close_tab,
@@ -217,6 +223,7 @@ pub fn run() {
             commands::dispatch::close_group_tabs,
             commands::companion::companion_status,
             commands::companion::companion_tabs_digest,
+            commands::companion::companion_test_connection,
             commands::pairing::pairing_export,
             commands::pairing::pairing_copy,
             commands::pairing::pairing_open_page,
@@ -250,6 +257,7 @@ pub fn run() {
         .setup(|app| {
             let initialized = tauri::async_runtime::block_on(async {
                 let path = launcher::config::config_path()?;
+                launcher::portable::recover_restore(&path)?;
                 let mut config = launcher::config::Config::load_or_create(&path)?;
                 let companion = launcher::ws_server::start_configured(&mut config, &path).await;
                 Ok::<_, String>(LauncherState {
@@ -271,6 +279,7 @@ pub fn run() {
                 companion: Err(error),
             }));
             if app.try_state::<runtime::DesktopState>().is_some() {
+                commands::companion::enable_capture(app.handle());
                 desktop::initialize(app.handle())?;
             } else if let Some(window) = app.get_webview_window("main") {
                 // Show startup errors in the UI even when config initialization failed.

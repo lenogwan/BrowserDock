@@ -72,5 +72,5 @@ test('unavailable storage leaves the companion unpaired without throwing', async
 test('background entry requires extension APIs and websocket support', async () => {
   const src = await import('node:fs/promises').then(m => m.readFile(new URL('../src/background.js', import.meta.url), 'utf8'));
   assert.match(src, /requires the tabs\/storage extension APIs/);
-  assert.match(src, /action\?\.onClicked/);
+  assert.match(src, /void companion.start/);
 });

@@ -1,25 +1,29 @@
 <script lang="ts">
   import { onDestroy, untrack } from "svelte";
+  import PortableLibrary from "../portable/PortableLibrary.svelte";
   import BrowserPanel from "../browsers/BrowserPanel.svelte";
   import CompanionSetup from "../companion/CompanionSetup.svelte";
   import ShortcutRecorder from "./ShortcutRecorder.svelte";
   import { THEMES } from "./themes";
-  import type { ThemeId, Settings, Browser, WindowSize, InstanceDigest } from "../../shared/types";
+  import type { ThemeId, Settings, Browser, Group, WindowSize, InstanceDigest } from "../../shared/types";
 
-  type Tab = "appearance" | "behavior" | "browsers" | "companion";
+  type Tab = "appearance" | "behavior" | "browsers" | "companion" | "library";
   const TABS: { id: Tab; label: string }[] = [
     { id: "appearance", label: "Appearance" },
     { id: "behavior", label: "Behavior" },
     { id: "browsers", label: "Browsers" },
     { id: "companion", label: "Companion" },
+    { id: "library", label: "Library" },
   ];
   const TIMEOUT_PRESETS = [5, 15, 30, 60];
 
   let {
+    publicGroups = [], onlibrarychange,
     settings,
     browsers = [],
     instances = [],
     companionError = "",
+    reconnecting = [],
     native = false,
     dirty = $bindable(false),
     discardRequest = $bindable(0),
@@ -33,10 +37,12 @@
     onsizepreview,
     onsizecancel,
   }: {
+    publicGroups?: Group[]; onlibrarychange: () => Promise<void>;
     settings: Settings;
     browsers?: Browser[];
     instances?: InstanceDigest[];
     companionError?: string;
+    reconnecting?: string[];
     native?: boolean;
     dirty?: boolean;
     discardRequest?: number;
@@ -287,9 +293,11 @@
     <div class="tab-body" role="tabpanel" id="settings-panel" aria-labelledby={`settings-tab-${tab}`} tabindex="0">
       <BrowserPanel {browsers} {instances} onsave={onbrowser} {onredetect} {onprofiles} />
     </div>
+  {:else if tab === "library"}
+    <div class="tab-body" role="tabpanel" id="settings-panel" aria-labelledby={`settings-tab-${tab}`} tabindex="0"><PortableLibrary {browsers} groups={publicGroups} {native} onchange={onlibrarychange} /></div>
   {:else}
     <div class="tab-body" role="tabpanel" id="settings-panel" aria-labelledby={`settings-tab-${tab}`} tabindex="0">
-      <CompanionSetup {instances} {companionError} {native} />
+      <CompanionSetup {browsers} {instances} {reconnecting} {companionError} {native} onconfigure={() => tab = 'browsers'} />
     </div>
   {/if}
 
@@ -321,6 +329,8 @@
 
   .settings-view {
     display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    min-width: 0;
     gap: 12px;
     padding: 12px 12px 8px;
   }
@@ -333,6 +343,7 @@
   }
   .tabs {
     display: flex;
+    min-width: 0;
     gap: 4px;
     background: #ffffff06;
     border: 1px solid #ffffff0e;
@@ -358,6 +369,7 @@
   }
   .tab-body {
     display: grid;
+    min-width: 0;
     gap: 12px;
   }
   .toggle {

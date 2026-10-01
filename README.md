@@ -97,6 +97,8 @@ Related scripts: `npm run package:extension` builds the store-upload artifacts (
 
 Without this, URLs open as new tabs; with it, the dock finds and focuses already-open tabs. No `config.json` editing needed — the installer bundles the companion and the app generates pre-configured pairing data.
 
+In **Settings → Companion**, choose the browsers you use. Installed or connected browsers appear automatically; deselect any you do not want in setup. **Ready** means all selected browsers are connected. Each browser has a **Test connection** button for a fresh local check without opening tabs. A passing test confirms that the connection responds, not that Windows can foreground the browser. Use **Configure or detect browsers** if one is missing; bulk pairing-file export is under advanced options.
+
 1. In BrowserDock, open **Settings → Connect your browsers**.
 2. Press **Stage companion folder**, then **Copy code** for a browser (or **Save pairing files** for all four) and **Open extensions**.
 3. In Chrome/Edge: enable Developer mode → **Load unpacked** → pick the staged `companion\chromium` folder. In Firefox/Mullvad: `about:debugging#/runtime/this-firefox` → **Load Temporary Add-on** → `companion\gecko\manifest.json`.
@@ -107,6 +109,8 @@ Alternative: run `install-companion.ps1 -OpenBrowsers` from the extracted dist f
 Full details, private-tab opt-in, and limits: [`extension/README.md`](extension/README.md).
 
 ## Daily use
+
+The expanded dock previews what **Enter** will do for the selected bookmark or URL, including your browser override and profile/container. “Switch to existing…” uses the reported site match; the browser checks again when you open. “Open or switch” means the available inventory or connection state cannot establish which action will happen. Private-window launches are labeled explicitly. Hover over the preview for details, including the limitation that a Chromium profile setting cannot guarantee which connected profile handles tab reuse.
 
 | Action | How |
 | :--- | :--- |
@@ -131,6 +135,12 @@ Full details, private-tab opt-in, and limits: [`extension/README.md`](extension/
 Settings → Appearance previews theme and opacity until Save; Discard restores the saved appearance. The three visibility settings are independent.
 
 Create groups using **Add group**, move bookmarks by dragging or the editor's Group select, and use group editing controls to rename, reorder, or delete. Deleting a group keeps its bookmarks under Ungrouped. Search includes group names. Private groups are available only while the vault is unlocked.
+
+Use **Undo public action** or **Undo private action** after deleting or moving a bookmark. Undo restores one action, including affected descendants and order; later edits invalidate it. Private undo disappears when the vault locks. **Select bookmarks** lets you choose several rows and move them to a group or Ungrouped. Parents carry their descendants, and selections stay within one public/private scope.
+
+**Settings → Library** imports bookmark HTML exported by Firefox, Mullvad, Chrome or Edge. Choose the browser and grouping, review the preview, then **Check import** and **Import bookmarks**. Exact duplicate destinations are skipped. Nested folders become groups using their immediate folder name; equal names merge. Unsupported URLs and oversized entries are reported and skipped. Imports are public and limited to 1000 links per file.
+
+**Download library backup** saves public bookmarks/groups and the encrypted vault locally. Keep the original vault password: the backup cannot recover it. Machine settings, browser paths, routing rules and pairing credentials are excluded. To restore, choose the JSON backup, review its counts and confirm replacement. Replacing the vault is optional and off by default. Restore locks the vault and keeps the old config/vault in a local recovery folder whose path is shown afterward; interrupted restores recover on the next startup. If recovery remains pending after a failure, further saves, exports and vault unlocks are blocked until you restart BrowserDock. These recovery copies stay until you remove them manually.
 
 Nest bookmarks using the editor's **Parent** select or by holding a dragged row over another row's body briefly. Trees support children and grandchildren; the group follows the parent. Drop on a row's top edge to reorder siblings, or on a group header to return to root. Choose **Parent → None** to unnest using the keyboard or touch. Escape cancels dragging. Deleting a parent keeps its children under its former parent, or at root.
 
@@ -160,6 +170,8 @@ cargo test --locked --manifest-path src-tauri/core/Cargo.toml  # Rust core tests
 
 ## Troubleshooting
 
+Companion v1.0.9 adds **Connection diagnostics** on its options page. If a browser intermittently disconnects, inspect the recent reason codes and recovery durations there. The last 50 events stay within the browser session and contain no URLs or pairing tokens. Update/reload the companion and rebuild/restart the desktop app to receive both sides of the recovery-timing improvements. The dock briefly shows **reconnecting** when a previously connected browser disappears; tab reuse is unavailable for the missing connection during that time.
+
 | Symptom | Fix |
 | :--- | :--- |
 | `cargo` not found | Install Rust MSVC toolchain and reopen the terminal |
@@ -180,3 +192,5 @@ cargo test --locked --manifest-path src-tauri/core/Cargo.toml  # Rust core tests
 | [`extension/README.md`](extension/README.md) | Companion install, pairing, behavior limits |
 | [`docs/phase-6-7.md`](docs/phase-6-7.md) | Dock and vault usage notes |
 | [`.agents/skills/browser-dock-builder/SKILL.md`](.agents/skills/browser-dock-builder/SKILL.md) | Implementation skill, with identical discovery copies in `.codex/` and `.opencode/` |
+
+To save the current page, click the companion toolbar button, edit its title, choose a public group (or Ungrouped), and select **Save to BrowserDock**. Use companion v1.0.11 with an updated desktop. After reconnecting or changing pairing, refresh an open capture popup before saving. Capture keeps the connected browser and Firefox/Mullvad container; private-window tabs must be managed through the dock vault. If the save outcome is unknown, inspect the dock before saving again. Connection settings remain available from the popup.

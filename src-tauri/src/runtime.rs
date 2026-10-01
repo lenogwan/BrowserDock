@@ -17,6 +17,7 @@ use zeroize::Zeroizing;
 pub struct DesktopState {
     pub size: Mutex<browserdock_launcher::window_size::SizeState>,
     pub config: Mutex<Config>,
+    pub history: Mutex<browserdock_launcher::organization_history::PublicHistory>,
     pub vault: Mutex<Vault>,
     pub gate: browserdock_launcher::session::SessionGate,
     pub path: PathBuf,
@@ -235,6 +236,14 @@ pub async fn save_bookmark(
             .iter()
             .filter_map(|v| serde_json::from_value(v.clone()).ok())
             .collect();
+        let undoable = bookmarks
+            .iter()
+            .find(|b| b.id == bookmark.id)
+            .is_some_and(|b| {
+                b.group_id != bookmark.group_id
+                    || b.parent_id != bookmark.parent_id
+                    || b.sort_order != bookmark.sort_order
+            });
         let id = bookmark.id.clone();
         groups::save_bookmark(&mut bookmarks, &next.groups, bookmark)?;
         let bookmark = bookmarks
@@ -260,7 +269,13 @@ pub async fn save_bookmark(
             next.bookmarks.push(value);
         }
         groups::patch_organization(&mut next.bookmarks, &bookmarks);
+        let mut history = state.history.lock().map_err(|_| "Undo unavailable")?;
         next.save(&state.path)?;
+        if undoable {
+            history.record(&config, &next);
+        } else {
+            history.clear();
+        }
         *config = next;
         Ok(())
     })
@@ -305,7 +320,9 @@ pub async fn delete_bookmark(
         groups::patch_organization(&mut next.bookmarks, &bookmarks);
         next.bookmarks
             .retain(|b| b.get("id").and_then(|v| v.as_str()) != Some(id.as_str()));
+        let mut history = state.history.lock().map_err(|_| "Undo unavailable")?;
         next.save(&state.path)?;
+        history.record(&c, &next);
         *c = next;
         Ok(())
     })
@@ -464,6 +481,7 @@ pub fn initialize(app: &tauri::AppHandle, config: Config, path: PathBuf) {
             Settings::from_config(&config).window_size,
         )),
         config: Mutex::new(config),
+        history: Mutex::new(Default::default()),
         vault: Mutex::new(Vault::new(
             path.with_file_name("vault.enc"),
             Duration::from_secs(timeout * 60),

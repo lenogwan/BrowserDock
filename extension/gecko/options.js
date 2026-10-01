@@ -130,8 +130,11 @@ async function refreshConnectionStatus() {
       unpaired: 'Not paired.', connecting: 'Connecting to BrowserDock…',
       authenticating: 'Checking pairing with BrowserDock…', connected: 'Connected to BrowserDock.',
       disconnected: 'Disconnected. Check that BrowserDock is running and the pairing details are current.',
+      reconnecting: 'Reconnecting to BrowserDock… Tab reuse is temporarily unavailable.',
     };
     connectionStatus.textContent = labels[result?.state] ?? 'Connection status unavailable. Reload the extension if this continues.';
+    const diagnostics = document.getElementById('connection-diagnostics');
+    if (diagnostics) diagnostics.textContent = (result?.diagnostics ?? []).map(entry => `${new Date(entry.at).toLocaleTimeString()} ${entry.reason}${entry.durationMs === undefined ? '' : ` (recovered in ${(entry.durationMs / 1000).toFixed(1)}s)`}`).join('\n') || 'No connection events yet.';
   } catch { connectionStatus.textContent = 'Connection status unavailable. Reload the extension if this continues.'; }
 }
 void refreshConnectionStatus();

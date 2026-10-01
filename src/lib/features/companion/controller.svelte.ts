@@ -1,12 +1,17 @@
 import type { InstanceDigest } from '../../shared/types';
 import { invokeCommand, type CompanionDigest } from '../../platform/tauri/commands';
+import { recoveryState } from './recovery.js';
 
 export class CompanionController {
   instances = $state<InstanceDigest[]>([]);
   error = $state('');
   private lastDigest = '';
+  private recovery: Record<string, { count: number; since: number | null }> = {};
+  reconnecting = $state<string[]>([]);
 
   applyDigest(status: CompanionDigest) {
+    this.recovery = recoveryState(this.recovery, status.instances, Date.now());
+    this.reconnecting = Object.entries(this.recovery).filter(([, value]) => value.since !== null).map(([browser]) => browser);
     // Keep array identity stable between unchanged polls so search ranking
     // does not recompute for every one-second digest.
     const digest = JSON.stringify(status.instances);

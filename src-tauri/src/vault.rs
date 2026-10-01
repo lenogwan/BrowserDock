@@ -101,6 +101,7 @@ struct Unlocked {
     bookmarks: Vec<Bookmark>,
     groups: Vec<Group>,
     activity: Instant,
+    undo: Option<Vec<Bookmark>>,
 }
 #[derive(Serialize)]
 pub struct VaultStatus {
@@ -167,6 +168,7 @@ impl Vault {
         }
     }
     pub fn create(&mut self, secret: &str, now: Instant) -> Result<(), String> {
+        crate::portable::ensure_no_pending_restore(&self.path)?;
         if secret.chars().count() < 8 || secret.len() > 1024 || secret.chars().all(char::is_numeric)
         {
             return Err("Use at least 8 characters; numeric-only secrets are not allowed".into());
@@ -184,6 +186,7 @@ impl Vault {
             bookmarks: vec![],
             groups: vec![],
             activity: now,
+            undo: None,
         });
         self.failures = 0;
         self.lock_event = false;
@@ -191,10 +194,11 @@ impl Vault {
         Ok(())
     }
     pub fn unlock(&mut self, secret: &str, now: Instant) -> Result<(), String> {
+        self.lock();
+        crate::portable::ensure_no_pending_restore(&self.path)?;
         if self.blocked_until.is_some_and(|t| now < t) {
             return Err("Too many attempts. Wait before trying again".into());
         }
-        self.lock();
         let result = (|| {
             if secret.len() > 1024 {
                 return Err("Cannot unlock vault".into());
@@ -241,6 +245,7 @@ impl Vault {
                 bookmarks,
                 groups,
                 activity: now,
+                undo: None,
             })
         })();
         match result {
@@ -274,7 +279,17 @@ impl Vault {
         self.expire(now);
         bookmark.validate()?;
         let state = self.unlocked.as_ref().ok_or("Vault is locked")?;
-        let mut bookmarks = state.bookmarks.clone();
+        let undoable = state
+            .bookmarks
+            .iter()
+            .find(|b| b.id == bookmark.id)
+            .is_some_and(|b| {
+                b.group_id != bookmark.group_id
+                    || b.parent_id != bookmark.parent_id
+                    || b.sort_order != bookmark.sort_order
+            });
+        let before = state.bookmarks.clone();
+        let mut bookmarks = before.clone();
         groups::save_bookmark(&mut bookmarks, &state.groups, bookmark)?;
         let groups = self
             .unlocked
@@ -282,7 +297,11 @@ impl Vault {
             .ok_or("Vault is locked")?
             .groups
             .clone();
-        self.persist(bookmarks, groups, now)
+        self.persist(bookmarks, groups, now)?;
+        if undoable {
+            self.unlocked.as_mut().ok_or("Vault is locked")?.undo = Some(before);
+        }
+        Ok(())
     }
     pub fn delete(&mut self, id: &str, now: Instant) -> Result<(), String> {
         self.expire(now);
@@ -292,6 +311,7 @@ impl Vault {
             .ok_or("Vault is locked")?
             .bookmarks
             .clone();
+        let before = bookmarks.clone();
         groups::delete_bookmark(&mut bookmarks, id)?;
         let groups = self
             .unlocked
@@ -299,7 +319,9 @@ impl Vault {
             .ok_or("Vault is locked")?
             .groups
             .clone();
-        self.persist(bookmarks, groups, now)
+        self.persist(bookmarks, groups, now)?;
+        self.unlocked.as_mut().ok_or("Vault is locked")?.undo = Some(before);
+        Ok(())
     }
     pub fn groups(&mut self, now: Instant) -> Result<Vec<Group>, String> {
         self.expire(now);
@@ -337,8 +359,33 @@ impl Vault {
         let state = self.unlocked.as_ref().ok_or("Vault is locked")?;
         let groups = state.groups.clone();
         let mut bookmarks = state.bookmarks.clone();
+        let before = bookmarks.clone();
         groups::move_bookmark(&mut bookmarks, &groups, id, group_id, parent_id, index)?;
-        self.persist(bookmarks, groups, now)
+        self.persist(bookmarks, groups, now)?;
+        self.unlocked.as_mut().ok_or("Vault is locked")?.undo = Some(before);
+        Ok(())
+    }
+    pub fn move_selection(
+        &mut self,
+        ids: &[String],
+        group_id: Option<String>,
+        now: Instant,
+    ) -> Result<(), String> {
+        self.expire(now);
+        let state = self.unlocked.as_ref().ok_or("Vault is locked")?;
+        let before = state.bookmarks.clone();
+        let mut bookmarks = before.clone();
+        let groups = state.groups.clone();
+        groups::move_selection(&mut bookmarks, &groups, ids, group_id)?;
+        self.persist(bookmarks, groups, now)?;
+        self.unlocked.as_mut().ok_or("Vault is locked")?.undo = Some(before);
+        Ok(())
+    }
+    pub fn undo(&mut self, now: Instant) -> Result<(), String> {
+        self.expire(now);
+        let state = self.unlocked.as_ref().ok_or("Vault is locked")?;
+        let before = state.undo.as_ref().ok_or("Nothing to undo")?.clone();
+        self.persist(before, state.groups.clone(), now)
     }
     fn persist(
         &mut self,
@@ -373,6 +420,7 @@ impl Vault {
         }
         write_blob(&self.path, &blob, false)?;
         let state = self.unlocked.as_mut().ok_or("Vault is locked")?;
+        state.undo = None;
         state.bookmarks = bookmarks;
         state.groups = groups;
         state.activity = now;
@@ -394,6 +442,7 @@ fn validate_bookmarks(bookmarks: &[Bookmark]) -> Result<(), String> {
     Ok(())
 }
 fn write_blob(path: &Path, blob: &[u8], create: bool) -> Result<(), String> {
+    crate::portable::ensure_no_pending_restore(path)?;
     let parent = path.parent().ok_or("Invalid vault path")?;
     fs::create_dir_all(parent).map_err(|_| "Cannot create vault directory")?;
     let mut file = tempfile::NamedTempFile::new_in(parent).map_err(|_| "Cannot write vault")?;

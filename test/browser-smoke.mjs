@@ -36,6 +36,7 @@ await page.addInitScript(() => {
       title: "Private destination",
       url: "https://private.example",
       target_browser: "mullvad",
+      browser_options: {container: 'Secret context'},
       tags: ["personal"],
       icon: "",
     },
@@ -61,6 +62,7 @@ await page.addInitScript(() => {
     failMove:false,
     pendingList: null,
     publicItems,
+    pendingRoutes: [],
   };
   window.emitTest = (event) => {
     for (const id of listeners.get(event) || [])
@@ -108,7 +110,7 @@ await page.addInitScript(() => {
               id,
               name,
               color: "#b8edc9",
-              exe_path: "",
+              exe_path: ["firefox", "edge"].includes(id) ? `C:\\Browsers\\${id}.exe` : "",
             })),
             settings,
             warnings: [],
@@ -164,6 +166,7 @@ await page.addInitScript(() => {
             error: null,
           };
         case "companion_tabs_digest":
+          if (window.testState.companionMissing) return { instances: [], error: null };
           return {
             instances: [
               {
@@ -175,7 +178,16 @@ await page.addInitScript(() => {
             error: null,
           };
         case "browser_profiles": return ["Default", "Ray"];
-        case "route_details": return {browser_id:args.browserId || (isGoogleHost(args.url)?"chrome":"firefox"),profile:args.browserId?null:"Ray"};
+        case "route_details": {
+          const item = (args.bookmarkPrivate ? privateItems : publicItems).find(item => item.id === args.bookmarkId);
+          const browser_id = args.browserId || item?.target_browser || (isGoogleHost(args.url) ? 'chrome' : 'firefox');
+          const details = {browser_id, profile: item?.browser_options?.profile ?? (!args.browserId && browser_id === 'chrome' ? 'Ray' : null), container:item?.browser_options?.container, incognito:item?.browser_options?.incognito ?? false};
+          if (window.testState.holdRoute || (args.bookmarkPrivate && window.testState.holdPrivateRoute)) return new Promise(resolve => window.testState.pendingRoutes.push(() => resolve(details)));
+          return details;
+        }
+        case "companion_test_connection":
+          if (window.testState.failConnectionTest) throw Error('A companion did not respond within five seconds.');
+          return 1;
         case "save_group": {const i=groups.findIndex(g=>g.id===args.group.id);if(i<0)groups.push(args.group);else groups[i]=args.group;return;}
         case "move_bookmark": {
           if(window.testState.failMove)throw new Error("Move rejected");
@@ -205,6 +217,37 @@ try {
   assert.equal(await page.getByRole('button',{name:'Edit GitHub',exact:true}).getAttribute('aria-label'),'Edit GitHub');
   await page.getByText('Esc hide',{exact:false}).waitFor();
   await page.getByText('new tab',{exact:false}).waitFor();
+  await page.getByText('1 companion connected', {exact:true}).waitFor();
+  await page.getByRole('button', {name:'Open GitHub in firefox', exact:true}).focus();
+  await page.locator('#enter-preview').filter({hasText:'Switch to existing Firefox tab'}).waitFor();
+  await page.evaluate(() => { window.testState.companionMissing = true; });
+  await page.getByText('firefox reconnecting…', {exact:true}).waitFor();
+  await page.locator('#enter-preview').filter({hasText:'Open or switch in Firefox'}).waitFor();
+  await page.evaluate(() => { window.testState.companionMissing = false; });
+  await page.getByText('1 companion connected', {exact:true}).waitFor();
+  await page.getByRole('button', {name:'Settings', exact:true}).click();
+  await page.getByRole('tab', {name:'Companion', exact:true}).click();
+  const setup = page.getByRole('region', {name:'Companion setup'});
+  assert.equal(await setup.getByRole('checkbox').count(), 2);
+  await setup.getByRole('checkbox', {name:'Edge', exact:true}).uncheck();
+  await setup.getByText('Ready ✓', {exact:true}).waitFor();
+  await setup.getByRole('button', {name:'Test Firefox connection'}).click();
+  await setup.getByText(/Firefox: connection test passed for 1 instance/).waitFor();
+  assert.equal(await page.evaluate(() => window.testState.calls.filter(call => call.cmd === 'open_url').length), 0);
+  await page.evaluate(() => { window.testState.failConnectionTest = true; });
+  await setup.getByRole('button', {name:'Test Firefox connection'}).click();
+  await setup.getByRole('alert').filter({hasText:'did not respond'}).waitFor();
+  await page.evaluate(() => { window.testState.companionMissing = true; });
+  await setup.getByText('Reconnecting…', {exact:true}).waitFor();
+  await page.evaluate(() => { window.testState.companionMissing = false; window.testState.failConnectionTest = false; });
+  await setup.getByRole('button', {name:'Test Firefox connection'}).click();
+  await setup.getByText('Ready ✓', {exact:true}).waitFor();
+  for (const width of [280,400,800]) {
+    await page.setViewportSize({width,height:560});
+    assert.equal(await setup.evaluate(element => element.scrollWidth > element.clientWidth), false, `Setup overflows at ${width}px`);
+    if (width === 280) await page.screenshot({path:'/tmp/browserdock-setup-280.png'});
+  }
+  await page.getByRole('button', {name:'Back', exact:true}).click();
   for (const width of [280,400,800]) {
     await page.setViewportSize({width,height:560});
     const layout=await page.locator('.pill').evaluate(el=>({
@@ -213,13 +256,17 @@ try {
       input:el.querySelector('input').getBoundingClientRect().width,
     }));
     assert.equal(layout.overflow,false,`Pill overflows at ${width}px`);
-    assert.deepEqual(layout.badges,[23,23,23,23]);
+    assert.deepEqual(layout.badges,[23,23]);
     assert.ok(layout.input>40);
     assert.equal(await page.locator('footer').evaluate(el=>el.scrollWidth>el.clientWidth),false);
     assert.equal(await page.locator('nav').evaluate(el=>el.scrollWidth>el.clientWidth),false);
     if(width===280)await page.screenshot({path:'/tmp/browserdock-ui-280.png'});
   }
   await page.setViewportSize({width:400,height:560});
+  assert.equal(await page.getByRole('button',{name:'Route to firefox',exact:true}).count(),1);
+  assert.equal(await page.getByRole('button',{name:'Route to edge',exact:true}).count(),1);
+  assert.equal(await page.getByRole('button',{name:'Route to mullvad',exact:true}).count(),0);
+  assert.equal(await page.getByRole('button',{name:'Route to chrome',exact:true}).count(),0);
   await page.keyboard.press('Tab');
   for(const selector of ['.icon-button','.browser-badge','.group-title','.row-open']) {
     const control=page.locator(selector).first();
@@ -240,6 +287,17 @@ try {
   });
   await search.click();
   await page.getByRole("button", { name: "Open GitHub in firefox" }).waitFor();
+  await page.evaluate(() => {
+    window.testState.publicItems.push({ id: 'captured', title: 'Captured tab', url: 'https://captured.example/', target_browser: 'edge', tags: [], icon: '' });
+    window.emitTest('bookmarks-changed');
+  });
+  await page.getByRole('button', { name: 'Open Captured tab in edge', exact: true }).waitFor();
+  await page.evaluate(() => {
+    window.testState.publicItems.splice(window.testState.publicItems.findIndex(item => item.id === 'captured'), 1);
+    window.emitTest('bookmarks-changed');
+  });
+  await page.getByRole('button', { name: 'Open Captured tab in edge', exact: true }).waitFor({ state: 'detached' });
+
   assert.equal(
     await page.locator("main").evaluate((el) => el.scrollWidth),
     398,
@@ -251,7 +309,20 @@ try {
   );
   await search.fill("docs.google.com");
   await page.locator(".route-name").filter({hasText:"chrome · Ray"}).waitFor();
+  await page.locator('#enter-preview').filter({hasText:'Open in Chrome · Ray profile'}).waitFor();
+  // Older route responses must never overwrite a newer URL or override.
+  await page.evaluate(() => { window.testState.holdRoute = true; });
+  await search.fill('github.com');
+  await page.waitForFunction(() => window.testState.pendingRoutes.length === 1);
+  await search.fill('docs.google.com');
+  await page.waitForFunction(() => window.testState.pendingRoutes.length === 2);
+  await page.evaluate(() => window.testState.pendingRoutes[1]());
+  await page.locator('#enter-preview').filter({hasText:'Open in Chrome · Ray profile'}).waitFor();
+  await page.evaluate(() => { window.testState.pendingRoutes[0](); window.testState.holdRoute = false; });
+  await page.waitForTimeout(50);
+  assert.match(await page.locator('#enter-preview').innerText(), /Chrome · Ray profile/);
   await search.press("Alt+e");
+  await page.locator('#enter-preview').filter({hasText:'Open in Edge'}).waitFor();
   await search.press("Shift+Enter");
   const launch = await page.evaluate(() =>
     window.testState.calls.find((c) => c.cmd === "open_url"),
@@ -270,6 +341,7 @@ try {
     .getByRole("button", { name: "Open Useful place in firefox" })
     .waitFor();
   await page.getByRole("button", { name: "Vault", exact: true }).click();
+  await page.evaluate(() => { window.testState.holdPrivateRoute = true; });
   await page.getByLabel("Passphrase", { exact: true }).fill("valid secret");
   await page.getByRole("button", { name: "Unlock vault", exact: true }).click();
   await page
@@ -282,10 +354,15 @@ try {
     .getByRole("button", { name: "Open Private destination in mullvad" })
     .waitFor();
   // Lock unmounts private results and any editor immediately.
+  await page.waitForFunction(() => window.testState.pendingRoutes.length > 2);
   await page.evaluate(() => {
     window.testState.vault.locked = true;
     window.emitTest("vault-locked");
+    window.testState.holdPrivateRoute = false;
+    window.testState.pendingRoutes.slice(2).forEach(resolve => resolve());
   });
+  await page.waitForTimeout(50);
+  assert.ok(!(await page.locator('body').innerText()).includes('Secret context'));
   assert.equal(
     await page
       .getByRole("button", { name: "Open Private destination in mullvad" })

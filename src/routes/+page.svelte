@@ -1,6 +1,7 @@
 <script lang="ts">
   import { isTauri } from "@tauri-apps/api/core";
-  import { invokeCommand } from "$lib/platform/tauri/commands";
+  import { invokeCommand, type RouteDetails } from "$lib/platform/tauri/commands";
+  import { launchPreview } from "$lib/features/bookmarks/launch-preview.js";
   import { listenDockEvent } from "$lib/platform/tauri/events";
   import { getCurrentWindow } from "@tauri-apps/api/window";
   import { onMount, tick, untrack } from "svelte";
@@ -71,6 +72,7 @@
     refreshPrivate: loadPrivate,
     reportError: (cause) => { error = String(cause); },
   };
+  let moveGroup = $state("");
   let busy = $state(false),
     input = $state<HTMLInputElement | undefined>(undefined);
   let mounted = true,
@@ -82,7 +84,8 @@
     dragSequence = 0;
   const companion = new CompanionController();
   let toastTimer: ReturnType<typeof setTimeout> | undefined;
-  let route = $state("firefox");
+  let resolvedRoute = $state<{ key: string; details: RouteDetails } | null>(null);
+  let routeFailed = $state("");
   let routeGeneration = 0;
   async function commitSize(value:WindowSize){
     await windowController.size.commit();
@@ -120,6 +123,12 @@
     return current ? entryKey(current) : null;
   });
   const url = $derived(directUrl(query));
+  const selectedBookmark = $derived(url && selected === 0 ? undefined : keyboardResults[selected - (url ? 1 : 0)]);
+  const previewUrl = $derived(view !== 'settings' && !bookmarkController.editing && !bookmarkController.editingGroup && !(view === 'vault' && vaultController.status.locked) ? selectedBookmark?.url ?? url : null);
+  const previewKey = $derived(JSON.stringify([previewUrl, selectedBookmark?.id, selectedBookmark?.private, override, vaultController.generation, browsers]));
+  const previewDetails = $derived(resolvedRoute?.key === previewKey ? resolvedRoute.details : null);
+  const route = $derived(previewDetails ? [previewDetails.browser_id, previewDetails.profile || previewDetails.container].filter(Boolean).join(' · ') : 'Resolving…');
+  const enterPreview = $derived(previewUrl && previewDetails ? launchPreview({ details: previewDetails, url: previewUrl, browsers, instances: companion.instances, uncertain: !!companion.error || companion.reconnecting.includes(previewDetails.browser_id) }) : null);
   // Per-browser tab counts for the footer tooltip: distinguishes at a glance
   // between "companion not connected" and "connected but syncing zero tabs"
   // (e.g. private-only windows without the private-tabs opt-in).
@@ -166,20 +175,24 @@
       invokeCommand("dock_resize", { height: h }).catch((e) => (error = String(e)));
   });
   $effect(() => {
-    const value = url;
+    const value = previewUrl;
+    const bookmark = selectedBookmark;
+    const key = previewKey;
     const chosen = override;
     if (routeTimer) clearTimeout(routeTimer);
-    if (!windowController.native || !value) return;
     const current = ++routeGeneration;
+    resolvedRoute = null;
+    routeFailed = '';
+    if (!windowController.native || !value) return;
     // Route preview is IPC per keystroke without this; trailing-edge debounce
     // keeps typing at 60fps while the label still follows within ~120ms.
     routeTimer = setTimeout(() => {
       if (!mounted) return;
-      invokeCommand("route_details", { url: value, browserId: chosen })
+      invokeCommand("route_details", { url: value, browserId: chosen ?? bookmark?.target_browser ?? null, bookmarkId: bookmark?.id ?? null, bookmarkPrivate: !!bookmark?.private })
         .then((details) => {
-          if (current === routeGeneration) route = [details.browser_id, details.profile || details.container].filter(Boolean).join(" · ");
+          if (mounted && current === routeGeneration) resolvedRoute = { key, details };
         })
-        .catch(() => {});
+        .catch(() => { if (mounted && current === routeGeneration) routeFailed = key; });
     }, 120);
   });
   $effect(() => {
@@ -205,9 +218,14 @@
   });
 
   function clearPrivate(markLocked = true) {
+    resolvedRoute = null;
+    routeFailed = '';
+    routeGeneration++;
+    if (routeTimer) clearTimeout(routeTimer);
     vaultController.clear(markLocked);
+    if (bookmarkController.selectionPrivate) moveGroup = "";
     bookmarkController.clearPrivatePresentation();
-    view = "search";
+    if (view !== "settings") view = "search";
     query = "";
     selected = 0;
     error = "";
@@ -468,7 +486,7 @@
       // fight the virtualizer's own scroll math.
       navTick++;
     }
-    if (e.key === "Enter" && e.target === input) {
+    if (e.key === "Enter" && (e.target === input || (e.target as HTMLElement)?.closest?.('.row-open'))) {
       e.preventDefault();
       await open(
         url && selected === 0 ? undefined : keyboardResults[selected - (url ? 1 : 0)],
@@ -530,9 +548,13 @@
     view = "search";
   }
   $effect(()=>{
-    const browserId=bookmarkController.editing?.target_browser;
+    const editor = bookmarkController.editing;
+    const browserId = editor?.target_browser;
+    const current = vaultController.generation;
     bookmarkController.profileHints=[];
-    if(windowController.native && browserId) invokeCommand("browser_profiles",{browserId}).then(value=>{if(bookmarkController.editing?.target_browser===browserId)bookmarkController.profileHints=value}).catch(()=>{});
+    if(windowController.native && browserId) invokeCommand("browser_profiles",{browserId}).then(value=>{
+      if(bookmarkController.editing === editor && editor?.target_browser === browserId && current === vaultController.generation) bookmarkController.profileHints=value;
+    }).catch(()=>{});
   });
   function addGroup(){ bookmarkController.addGroup(view === "vault", (view === "vault" ? vaultController.groups : bookmarkController.groups).length); }
   async function saveGroup(group:Group,close=true){
@@ -622,7 +644,7 @@
       };
     }
     let active = true;
-    const subscription = async (name: "vault-locked" | "dock-summoned" | "show-settings", handler: () => void) => {
+    const subscription = async (name: "vault-locked" | "dock-summoned" | "show-settings" | "bookmarks-changed", handler: () => void) => {
       const unlisten = await listenDockEvent(name, handler);
       if (active) cleanups.push(unlisten);
       else unlisten();
@@ -635,6 +657,7 @@
             if (active) cleanups.push(unlisten); else unlisten();
           })(),
           subscription("vault-locked", clearPrivate),
+          subscription("bookmarks-changed", () => { void loadPublic(); }),
           subscription("dock-summoned", () => {
             void summon();
           }),
@@ -696,6 +719,7 @@
         }}><GripVertical size={15} /></button
       >
       <SearchBar
+        describedby={windowController.expanded && previewUrl ? 'enter-preview' : undefined}
         bind:value={query}
         bind:input
         onfocus={() => {
@@ -799,9 +823,12 @@
                 oncancel={() => (bookmarkController.editing = null)}
               />{/key}
           {:else if view === "settings"}<SettingsView
+              publicGroups={bookmarkController.groups}
+              onlibrarychange={async () => { bookmarkController.publicUndo = false; bookmarkController.cancelSelection(); await loadPublic(); }}
               settings={settingsController.settings}
               {browsers}
               instances={companion.instances}
+              reconnecting={companion.reconnecting}
               companionError={companion.error}
               native={windowController.native}
               bind:dirty={settingsController.dirty}
@@ -821,6 +848,9 @@
               onsubmit={authenticate}
             />
           {:else}
+            {#if previewUrl}<div class="launch-preview" id="enter-preview" role="status" title={enterPreview?.note ?? 'The destination is resolved using the same settings as launch.'}>
+              <kbd>Enter</kbd><span>{!windowController.native ? 'Open the desktop app to launch' : enterPreview?.text ?? (routeFailed === previewKey ? 'Destination preview unavailable' : 'Checking destination…')}</span>
+            </div>{/if}
             <div class="section-caption">
               <span
                 >{query
@@ -842,12 +872,31 @@
             {#if url}<button
                 class="url-result"
                 class:active={selected === 0}
+                onfocus={() => selected = 0}
                 onclick={(e) => open(undefined, e.shiftKey)}
                 ><ArrowUpRight size={18} /><span
                   ><strong>Open URL</strong><small>{url}</small></span
-                ><span class="route-name" title={route}>{route}</span></button
+                ><span class="route-name" title={selected === 0 ? route : 'Select this URL to preview its destination'}>{selected === 0 ? route : 'URL routing'}</span></button
               >{/if}
+            <div class="organization-actions">
+              <button class="secondary" disabled={bookmarkController.moving} onclick={() => { if (bookmarkController.selecting) bookmarkController.cancelSelection(); else bookmarkController.selecting = true; }}>{bookmarkController.selecting ? 'Cancel selection' : 'Select bookmarks'}</button>
+              {#if bookmarkController.publicUndo && view !== 'vault'}<button class="secondary" disabled={bookmarkController.moving} onclick={() => bookmarkController.undo(false, bookmarkContext).catch(e => error = String(e))}>Undo public action</button>{/if}
+              {#if bookmarkController.privateUndo}<button class="secondary" disabled={bookmarkController.moving} onclick={() => bookmarkController.undo(true, bookmarkContext).catch(e => error = String(e))}>Undo private action</button>{/if}
+              {#if bookmarkController.selecting}
+                <small>{bookmarkController.selectedIds.length} selected · {bookmarkController.selectionPrivate ? 'Private' : 'Public'}</small>
+                <select aria-label="Move selected bookmarks to group" bind:value={moveGroup} disabled={bookmarkController.moving}>
+                  <option value="">Ungrouped</option>
+                  {#each (bookmarkController.selectionPrivate ? vaultController.groups : bookmarkController.groups) as group}<option value={group.id}>{group.name}</option>{/each}
+                </select>
+                <button class="primary" disabled={!bookmarkController.selectedIds.length || bookmarkController.moving} onclick={() => bookmarkController.moveSelected(moveGroup || null, bookmarkContext).catch(e => error = String(e))}>Move selected</button>
+                <small>Selecting in another scope starts a new selection. Descendants move with their selected parent.</small>
+              {/if}
+            </div>
             <BookmarkList
+              selecting={bookmarkController.selecting}
+              selectedIds={bookmarkController.selectedIds}
+              selectionPrivate={bookmarkController.selectionPrivate}
+              onselect={(bookmark) => { if (bookmarkController.selectionPrivate !== !!bookmark.private) moveGroup = ''; bookmarkController.toggleSelection(bookmark); }}
               sections={sections}
               treeIndex={allTree.index}
               treeExpanded={bookmarkController.treeExpanded}
@@ -867,6 +916,7 @@
               onmove={move}
               {openTabs}
               onopen={open}
+              onfocusbookmark={(bookmark) => { const index = keyboardResults.findIndex(item => entryKey(item) === entryKey(bookmark)); if (index >= 0) selected = index + (url ? 1 : 0); }}
               onclose={closeBookmark}
               onpin={togglePin}
               onedit={(bookmark) => (bookmarkController.editing = { ...bookmark })}
@@ -904,9 +954,9 @@
         <footer>
           <div class="footer-status">
             <span class="connection-status" class:disconnected={windowController.ready && windowController.native && !companion.instances.length}
-              title={companion.error || (companionSummary ? `Tab inventory — ${companionSummary}.` : "Connect a companion to reuse open tabs. Links still open normally.")}>
+              title={companion.error || (companion.reconnecting.length ? `Waiting for ${companion.reconnecting.join(', ')} to reconnect. Tab reuse is unavailable for disconnected instances.` : companionSummary ? `Tab inventory — ${companionSummary}.` : "Connect a companion to reuse open tabs. Links still open normally.")}>
               <span class="connection-dot" class:connected={companion.instances.length > 0} aria-hidden="true"></span>
-              <span>{!windowController.ready ? "Starting…" : !windowController.native ? "Preview" : companion.instances.length
+              <span>{!windowController.ready ? "Starting…" : !windowController.native ? "Preview" : companion.reconnecting.length ? `${companion.reconnecting.join(', ')} reconnecting…` : companion.instances.length
                 ? `${companion.instances.length} companion${companion.instances.length === 1 ? "" : "s"} connected`
                 : "No companions connected"}</span>
             </span>
@@ -925,6 +975,12 @@
 </main>
 
 <style>
+  .organization-actions {display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin:6px 0;}
+  .organization-actions small {color:var(--muted);font-size:10px;}
+  .organization-actions button,.organization-actions select {font-size:11px;padding:5px 7px;min-height:28px;}
+  .launch-preview {display:flex;gap:8px;align-items:baseline;padding:8px 10px;color:var(--muted);font-size:11px;border-bottom:1px solid var(--accent-alpha-12);}
+  .launch-preview span {min-width:0;overflow-wrap:anywhere;}
+  .launch-preview kbd {flex-shrink:0;color:var(--text);}
   main {
     position:relative;
     width: 100%;

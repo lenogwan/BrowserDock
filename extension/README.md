@@ -3,7 +3,7 @@
 Two complete unpacked builds share the source in `src/`:
 
 - `chromium/`: Chrome / Edge, Manifest V3 service worker; minimum Chromium 116.
-- `gecko/`: Firefox / Mullvad Browser, Manifest V3 background scripts; minimum Firefox 121.
+- `gecko/`: Firefox / Mullvad Browser, Manifest V3 background scripts; minimum Firefox 139.
 
 Build and test from the repository root using Node.js 22 or newer (no npm dependencies):
 
@@ -12,11 +12,19 @@ node extension/build.mjs
 node --test --test-isolation=none extension/test/*.test.mjs
 ```
 
-Prebuilt installable packages (regenerate with `npm run package:extension`):
+Packaging with `npm run package:extension` produces:
 
-- `build/extension/browserdock-chromium-v1.0.3.zip`: Chrome / Edge.
-- `build/extension/browserdock-gecko-v1.0.3.zip`: Firefox / Mullvad (manifest at zip root, ready for **Load Temporary Add-on**).
-- `build/extension/browserdock-gecko-v1.0.3.xpi`: byte-identical copy of the Gecko zip for developer installs. Permanent Firefox installation requires a Mozilla-signed package, which this repository does not publish.
+- `build/extension/browserdock-chromium-v1.0.11.zip`: Chrome / Edge.
+- `build/extension/browserdock-gecko-v1.0.11.zip`: Firefox / Mullvad (manifest at zip root, ready for **Load Temporary Add-on**).
+- `build/extension/browserdock-gecko-v1.0.11.xpi`: byte-identical copy of the Gecko zip for developer installs. Permanent Firefox installation requires a Mozilla-signed package, which this repository does not publish.
+
+### Background connection recovery (v1.0.9)
+
+The heartbeat sends every 20 seconds, with a 90-second missing-reply cutoff. The updated desktop waits 120 seconds before idle eviction, leaving margin for the one-minute recovery alarm. Alarm recovery replaces a stale connection immediately; other failures retry after three seconds. Update both the desktop and companion for the full timing change. No dispatched tab action is replayed.
+
+Open the companion options page → **Connection diagnostics** after a drop. Up to 50 timestamped reason codes and recovery durations remain in browser session storage across background restarts (memory only if session storage fails). `background_start` identifies a background-context start; `heartbeat_timeout`, `socket_closed`, `socket_error`, `auth_timeout`, `command_timeout`, `backpressure`, `send_failed`, `connect_failed` and `request_limit` identify the observed failure path. A socket error/closure alone does not identify its underlying cause. Diagnostics never store URLs, titles, credentials or raw errors, and expire with the browser session.
+
+For native acceptance, leave each browser unfocused while coding for several hours, then inspect diagnostics and verify tab focusing. Also test sleep/resume and desktop restart. Automated timers and mocked UI do not establish actual browser background scheduling.
 
 Edit `src/`, then rebuild. Generated copies in both distributions are included alongside the source for direct loading. The build is deterministic and includes all scripts, styles and the pairing page.
 
@@ -54,7 +62,7 @@ The save message confirms credential storage. A separate live connection indicat
 
 ## Behavior and limits
 
-After `AUTH` the companion waits for `AUTH_OK` before tab inventory or commands. It sends `PING` every 20 seconds, expects `PONG`, and reconnects after three seconds on disconnect. A one-minute browser alarm also reconnects after background suspension. Chromium's [WebSocket worker lifecycle guidance](https://developer.chrome.com/docs/extensions/how-to/web-platform/websockets) documents why the minimum version is 116; Gecko uses [background scripts](https://developer.mozilla.org/en-US/docs/Mozilla/Add-ons/WebExtensions/manifest.json/background).
+After `AUTH` the companion waits for `AUTH_OK` before tab inventory or commands. It sends `PING` every 20 seconds, expects `PONG`, and reconnects after three seconds on disconnect. A one-minute browser alarm independently probes healthy sockets and replaces stale or half-open sockets after background suspension or sleep/resume. Chromium's [WebSocket worker lifecycle guidance](https://developer.chrome.com/docs/extensions/how-to/web-platform/websockets) documents why the minimum version is 116; Gecko uses [background scripts](https://developer.mozilla.org/en-US/docs/Mozilla/Add-ons/WebExtensions/manifest.json/background).
 
 `FOCUS_OR_OPEN` may include a Firefox/Mullvad container name or cookie-store ID. Gecko resolves names through contextual identities, filters existing tabs by `cookieStoreId`, and creates the tab in that store. Unknown containers return `ERROR_CONTAINER_NOT_FOUND`; BrowserDock then opens a plain tab and shows a note. Chromium profile values are informational for connected companions; reliable profile targeting requires pairing an extension in each profile. Cold launches use the browser `--profile-directory` option. Inventory includes optional Gecko `cookieStoreId` values only in memory.
 
@@ -81,3 +89,11 @@ Native acceptance: verify create/join/title/color/collapse and close in Chrome, 
 ## Manual Windows validation
 
 Automated tests inject browser APIs and WebSocket transports and validate the generated manifests. They do not replace loading both builds in the actual Windows browsers. Verify pairing and status; exact/hostname/forced-new-tab behavior; foregrounding from a minimized window; restart recovery; two profiles with the same browser identity; disabled/wrong-token cases; default private-tab exclusion; opted-in private-tab access; and opening from a background-only browser or Mullvad private-only session. Windows may restrict foreground activation. Resource usage and Mullvad-specific policies require testing on the target installation.
+
+## Save the current tab (v1.0.11)
+
+Click the toolbar button to open **Save this tab**. The popup reads the active page and public groups from the connected desktop. Edit the title, choose an existing group or Ungrouped, and save. Groups are created and managed in the dock. Connection settings are available from the popup. Update both desktop and companion; an older desktop shows an update instruction.
+
+Only public HTTP(S) pages can be captured. Private-window pages are rejected even when private tab access is enabled. Captured bookmarks open with this companion's explicit browser identity and preserve Firefox/Mullvad containers; profile hints are not inferred. Exact destination duplicates leave existing bookmarks unchanged. Drafts are not persisted and are bound to the current connection. Refresh an open popup after reconnecting, changing pairing or restarting the background before saving. An interrupted or timed-out save disables retry in that popup; check the dock before another attempt.
+
+Native acceptance: verify Firefox/Chrome/Edge/Mullvad toolbar popups, group selection and duplicates, private-window rejection, Firefox containers, navigation and connection/pairing changes before Save, disconnected/older desktops, and popup close or background restart during Save. Confirm successful captures appear immediately in the dock and no private page data reaches config or diagnostics.

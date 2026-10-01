@@ -4,7 +4,7 @@ import vm from 'node:vm';
 import { readFile } from 'node:fs/promises';
 
 async function page(saved) {
-  const ids = ['pairing-form', 'browser', 'token', 'port', 'include-private', 'status', 'disconnect', 'pairing-code', 'import-code', 'pairing-file', 'import-status', 'connection-status'];
+  const ids = ['pairing-form', 'browser', 'token', 'port', 'include-private', 'status', 'disconnect', 'pairing-code', 'import-code', 'pairing-file', 'import-status', 'connection-status', 'connection-diagnostics'];
   const nodes = Object.fromEntries(ids.map(id => [id, { value: '', checked: false, textContent: '', disabled: false, files: [], handlers: {}, addEventListener(name, fn) { this.handlers[name] = fn; } }]));
   nodes['pairing-form'].reset = () => { for (const id of ['browser', 'token', 'port']) nodes[id].value = ''; nodes['include-private'].checked = false; };
   const writes = [];
@@ -84,6 +84,11 @@ test('connection feedback follows actual companion state without exposing creden
   p.runtime.sendMessage = async () => ({ state: 'disconnected' });
   await p.polls[0]();
   assert.match(p.nodes['connection-status'].textContent, /Disconnected/);
+  p.runtime.sendMessage = async () => ({ state: 'reconnecting', diagnostics: [{ at: 1000, reason: 'socket_closed' }, { at: 4000, reason: 'connected', durationMs: 3000 }] });
+  await p.polls[0]();
+  assert.match(p.nodes['connection-status'].textContent, /Reconnecting/);
+  assert.match(p.nodes['connection-diagnostics'].textContent, /socket_closed/);
+  assert.match(p.nodes['connection-diagnostics'].textContent, /recovered in 3.0s/);
   p.runtime.sendMessage = async () => { throw Error('unavailable'); };
   await p.polls[0]();
   assert.match(p.nodes['connection-status'].textContent, /unavailable/i);

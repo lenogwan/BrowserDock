@@ -1,6 +1,9 @@
 //! Phase 3 backend, compiled independently so routing/configuration tests do
 //! not require a desktop runtime. Phase 4 will dispatch to extensions first.
 pub mod config;
+pub mod capture;
+pub mod organization_history;
+pub mod portable;
 pub mod options;
 pub mod groups;
 pub mod pairing;

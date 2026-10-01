@@ -28,7 +28,7 @@ function mockDesktop(){
       case 'browser_profiles':return [];
       case 'open_url':return {browser_id:'firefox'};
       case 'open_bookmark_tree':if(args.private)return new Promise(resolve=>state.finishPrivate=()=>resolve({processed:2}));if(state.fail)throw Error('Partial subtree failure; no retry made');return {processed:3};
-      case 'move_bookmark':if(state.fail)throw Error('Move rejected');return;
+      case 'move_bookmark':if(state.fail)throw Error('Move rejected');state.items=(await import('/src/lib/features/bookmarks/groups.js')).moveBookmark(state.items,args.id,args.groupId,args.index,args.parentId);return;
       case 'save_bookmark':state.items=state.items.map(b=>b.id===args.bookmark.id?args.bookmark:b);return;
       case 'open_group':if(args.private)return new Promise(resolve=>state.finishPrivate=()=>resolve({processed:1}));if(state.fail)throw Error('Partial group failure; no retry made');return {processed:1};
       case 'close_group_tabs':state.closed=true;return {processed:1};

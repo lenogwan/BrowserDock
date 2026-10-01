@@ -4,10 +4,12 @@
     value = $bindable(""),
     input = $bindable<HTMLInputElement | undefined>(undefined),
     onfocus,
+    describedby,
   }: {
     value: string;
     input?: HTMLInputElement | undefined;
     onfocus: () => void;
+    describedby?: string;
   } = $props();
 </script>
 
@@ -21,6 +23,7 @@
     autofocus
     {onfocus}
     aria-label="Search bookmarks or enter a URL"
+    aria-describedby={describedby}
     placeholder="Search or paste URL…"
     autocomplete="off"
     spellcheck="false"

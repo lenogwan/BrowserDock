@@ -2,6 +2,7 @@
 //! callers communicate through bounded channels, never shared WebSocket sinks.
 pub use crate::ws_protocol::{MatchMode, Response, Tab, TabGroupHint};
 use crate::{
+    capture::{CaptureBridge, CaptureHandler, CaptureRequest},
     routing::parse_url,
     ws_protocol::{match_score, Auth, TabSync, MAX_MESSAGE_BYTES, MAX_URL_BYTES},
 };
@@ -31,7 +32,9 @@ use tokio_tungstenite::{
 
 const AUTH_TIMEOUT: Duration = Duration::from_secs(5);
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
-const IDLE_TIMEOUT: Duration = Duration::from_secs(60);
+// Allow the one-minute extension recovery alarm to run before idle eviction.
+// Command deadlines remain five seconds; this does not permit command replay.
+const IDLE_TIMEOUT: Duration = Duration::from_secs(120);
 const MAX_CONNECTIONS: usize = 32;
 
 struct Client {
@@ -40,6 +43,7 @@ struct Client {
     tabs: Vec<Tab>,
     containers: Vec<Container>,
     pending: HashMap<String, oneshot::Sender<Response>>,
+    probes: HashMap<Vec<u8>, oneshot::Sender<()>>,
     snapshot: Option<TabSnapshot>,
     tab_groups: bool,
 }
@@ -149,6 +153,7 @@ impl BoundServer {
 
     pub fn start(self) -> ServerHandle {
         let registry = Registry::default();
+        let capture = CaptureBridge::default();
         let (shutdown, receiver) = watch::channel(false);
         let error = Arc::new(Mutex::new(None));
         tokio::spawn(serve(
@@ -157,12 +162,14 @@ impl BoundServer {
             registry.clone(),
             receiver,
             error.clone(),
+            capture.clone(),
         ));
         ServerHandle(Arc::new(ServerInner {
             port: self.port,
             registry,
             shutdown,
             error,
+            capture,
         }))
     }
 }
@@ -207,6 +214,7 @@ pub async fn start_configured(
 }
 
 struct ServerInner {
+    capture: CaptureBridge,
     port: u16,
     registry: Registry,
     shutdown: watch::Sender<bool>,
@@ -232,6 +240,76 @@ pub struct GroupCommand<'a> {
 }
 
 impl ServerHandle {
+    pub fn set_capture_handler(&self, handler: Arc<CaptureHandler>) {
+        *self
+            .0
+            .capture
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()) = Some(handler);
+    }
+    /// A fresh, read-only WebSocket round trip to every instance of one browser.
+    /// Control frames work with existing companions and never dispatch tab actions.
+    pub async fn test_connection(&self, browser: &str) -> Result<usize, String> {
+        if !matches!(browser, "firefox" | "mullvad" | "chrome" | "edge") {
+            return Err("Unknown companion browser".into());
+        }
+        let nonce = uuid::Uuid::new_v4().as_bytes().to_vec();
+        let receivers = {
+            let mut clients = self
+                .0
+                .registry
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            let mut receivers = Vec::new();
+            for client in clients
+                .values_mut()
+                .filter(|client| client.browser == browser)
+            {
+                client.probes.retain(|_, sender| !sender.is_closed());
+                if client.probes.len() >= 4 {
+                    return Err("A connection test is already running".into());
+                }
+                let (sender, receiver) = oneshot::channel();
+                // Register only successfully queued probes. Dropped receivers are
+                // pruned before subsequent checks if another instance is busy.
+                client
+                    .tx
+                    .try_send(Message::Ping(nonce.clone()))
+                    .map_err(|_| "Companion is busy or disconnected")?;
+                client.probes.insert(nonce.clone(), sender);
+                receivers.push(receiver);
+            }
+            receivers
+        };
+        if receivers.is_empty() {
+            return Err(
+                "No companion connected. Open the browser and check its extension pairing.".into(),
+            );
+        }
+        let total = receivers.len();
+        let result = timeout(REQUEST_TIMEOUT, futures_util::future::join_all(receivers)).await;
+        {
+            let mut clients = self
+                .0
+                .registry
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            for client in clients.values_mut() {
+                client.probes.remove(&nonce);
+            }
+        }
+        match result {
+            Ok(replies) if replies.iter().all(Result::is_ok) => Ok(total),
+            Ok(_) => Err(
+                "A companion disconnected during the test. Try again after it reconnects.".into(),
+            ),
+            Err(_) => Err(
+                "A companion did not respond within five seconds. Check the browser's extension."
+                    .into(),
+            ),
+        }
+    }
+
     pub fn error(&self) -> Option<String> {
         self.0
             .error
@@ -756,6 +834,7 @@ async fn serve(
     registry: Registry,
     mut shutdown: watch::Receiver<bool>,
     error_status: Arc<Mutex<Option<String>>>,
+    capture: CaptureBridge,
 ) {
     let capacity = Arc::new(Semaphore::new(MAX_CONNECTIONS));
     let mut tasks = JoinSet::new();
@@ -776,12 +855,13 @@ async fn serve(
                 *error_status.lock().unwrap_or_else(|error| error.into_inner()) = None;
                 let Ok(permit) = capacity.clone().try_acquire_owned() else { continue; };
                 let (token, registry, mut shutdown) = (token.clone(), registry.clone(), shutdown.clone());
+                let capture = capture.clone();
                 tasks.spawn(async move {
                     let _permit = permit;
                     tokio::select! {
                         biased;
                         _ = shutdown.changed() => {},
-                        _ = connection(stream, &token, registry) => {},
+                        _ = connection(stream, &token, registry, capture) => {},
                     }
                 });
             }
@@ -797,7 +877,7 @@ async fn serve(
 
 // Tungstenite fixes the handshake callback's error type to an HTTP Response.
 #[allow(clippy::result_large_err)]
-async fn connection(stream: TcpStream, token: &str, registry: Registry) {
+async fn connection(stream: TcpStream, token: &str, registry: Registry, capture: CaptureBridge) {
     let config = WebSocketConfig {
         max_message_size: Some(MAX_MESSAGE_BYTES),
         max_frame_size: Some(MAX_MESSAGE_BYTES),
@@ -862,6 +942,7 @@ async fn connection(stream: TcpStream, token: &str, registry: Registry) {
                 tabs: vec![],
                 containers: vec![],
                 pending: HashMap::new(),
+                probes: HashMap::new(),
                 snapshot: None,
                 tab_groups: auth.capabilities.iter().any(|v| v == "tab_groups_v1"),
             },
@@ -871,11 +952,20 @@ async fn connection(stream: TcpStream, token: &str, registry: Registry) {
         registry: registry.clone(),
         instance_id: instance_id.clone(),
     };
+    let capture_enabled = capture
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .is_some();
+    let capabilities = if capture_enabled {
+        vec!["paged_tabs_v1", "capture_public_v1"]
+    } else {
+        vec!["paged_tabs_v1"]
+    };
     if !matches!(
         timeout(
             AUTH_TIMEOUT,
             socket.send(Message::Text(
-                json!({"type":"AUTH_OK","capabilities":["paged_tabs_v1"]}).to_string()
+                json!({"type":"AUTH_OK","capabilities":capabilities}).to_string()
             ))
         )
         .await,
@@ -899,12 +989,33 @@ async fn connection(stream: TcpStream, token: &str, registry: Registry) {
                         let Ok(value) = serde_json::from_str::<Value>(&text) else { break; };
                         if value.get("action").and_then(Value::as_str) == Some("PING") {
                             if !matches!(timeout(REQUEST_TIMEOUT, socket.send(Message::Text(json!({"action":"PONG"}).to_string()))).await, Ok(Ok(()))) { break; }
+                        } else if matches!(value.get("action").and_then(Value::as_str), Some("CAPTURE_GROUPS" | "CAPTURE_SAVE")) {
+                            if text.len() > 16384 { break; }
+                            let Ok(request) = serde_json::from_value::<CaptureRequest>(value) else { break; };
+                            if !request.valid_id() { break; }
+                            let id = request.id().to_owned();
+                            let handler = capture.lock().unwrap_or_else(|error| error.into_inner()).clone();
+                            let response = if let Some(handler) = handler {
+                                let browser = auth.browser.clone();
+                                let deadline = std::time::Instant::now() + REQUEST_TIMEOUT;
+                                match timeout(REQUEST_TIMEOUT, tokio::task::spawn_blocking(move || handler(&browser, &request, deadline))).await {
+                                    Ok(Ok(Ok(payload))) => json!({"action":"CAPTURE_RESULT","id":id,"ok":true,"payload":payload}),
+                                    Ok(Ok(Err(error))) => json!({"action":"CAPTURE_RESULT","id":id,"ok":false,"error":error}),
+                                    _ => json!({"action":"CAPTURE_RESULT","id":id,"ok":false,"uncertain":true,"error":"Save outcome unknown. Check BrowserDock before trying again."}),
+                                }
+                            } else { json!({"action":"CAPTURE_RESULT","id":id,"ok":false,"error":"Update BrowserDock to capture bookmarks."}) };
+                            if !matches!(timeout(REQUEST_TIMEOUT, socket.send(Message::Text(response.to_string()))).await, Ok(Ok(()))) { break; }
                         } else if !receive(value, &registry, &instance_id, &auth.browser) { break; }
                     },
                     Message::Ping(_) => {
                         if !matches!(timeout(REQUEST_TIMEOUT, socket.flush()).await, Ok(Ok(()))) { break; }
                     },
-                    Message::Pong(_) => {},
+                    Message::Pong(payload) => {
+                        let mut clients = registry.lock().unwrap_or_else(|error| error.into_inner());
+                        if let Some(sender) = clients.get_mut(&instance_id).and_then(|client| client.probes.remove(&payload)) {
+                            let _ = sender.send(());
+                        }
+                    },
                     _ => break,
                 }
             }

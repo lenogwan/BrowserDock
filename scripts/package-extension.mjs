@@ -26,11 +26,11 @@ This zip is the human-readable source of the uploaded Gecko (.xpi) build.
 No minified or obfuscated code is used anywhere.
 
 Contents:
-  build.mjs          concatenates protocol, inventory, actions, core and
+  build.mjs          concatenates protocol, inventory, actions, capture, core and
                      background source into background.js; protocol and the
                      options source become options.js. It strips local ESM
                      imports/exports and writes both distributions/manifests.
-  src/               authoritative source (modules and options page)
+  src/               authoritative source (modules, options page and capture popup)
   test/              node:test suites run against src/ (no dependencies)
 
 Reproduce the uploaded build (requires Node.js 22+, no npm dependencies):
@@ -38,7 +38,9 @@ Reproduce the uploaded build (requires Node.js 22+, no npm dependencies):
   2. Run:  node -e "import('./build.mjs').then(m => m.build('out'))"
      (equivalently: node extension/build.mjs from the repo root)
   3. Compare out/gecko/background.js, out/gecko/options.js,
-     out/gecko/options.html, out/gecko/options.css and
+     out/gecko/options.html, out/gecko/options.css,
+     out/gecko/capture.html, out/gecko/capture.css,
+     out/gecko/capture-popup.js and
      out/gecko/manifest.json against the same paths in the uploaded .xpi.
      The .js files are byte-identical; the manifest is formatted with
      JSON.stringify(manifest, null, 2).
@@ -62,7 +64,7 @@ Notes for reviewers:
 
 function zipWithSystemTools(sourceDir, outFile) {
   mkdirSync(dirname(outFile), { recursive: true });
-  const files = ['manifest.json', 'background.js', 'options.js', 'options.html', 'options.css'];
+  const files = ['manifest.json', 'background.js', 'options.js', 'options.html', 'options.css', 'capture.html', 'capture.css', 'capture-popup.js'];
   try {
     // Prefer Info-ZIP when available (Linux/macOS/Git-Bash).
     execFileSync('zip', ['-j', '-X', '-9', outFile, ...files], { cwd: sourceDir, stdio: 'pipe' });
@@ -72,7 +74,7 @@ function zipWithSystemTools(sourceDir, outFile) {
       // Portable fallback: Python stdlib (ships with most dev machines).
       execFileSync(
         'python3',
-        ['-c', `import zipfile,sys; [zipfile.ZipFile(sys.argv[1],'w',zipfile.ZIP_DEFLATED).write(f,f) for f in sys.argv[2:]]`, outFile, ...files],
+        ['-c', `import zipfile,sys\nwith zipfile.ZipFile(sys.argv[1],'w',zipfile.ZIP_DEFLATED) as z:\n for f in sys.argv[2:]: z.write(f,f)`, outFile, ...files],
         { cwd: sourceDir, stdio: 'pipe' }
       );
       return 'python3-zipfile';
@@ -141,7 +143,7 @@ function verifyBuild(version) {
     if (manifest.version !== version) {
       throw new Error(`extension/${flavor}/manifest.json version ${manifest.version} != built version ${version}`);
     }
-    for (const file of ['background.js', 'options.js']) {
+    for (const file of ['background.js', 'options.js', 'capture-popup.js']) {
       execFileSync(process.execPath, ['--check', join(root, 'extension', flavor, file)], { stdio: 'pipe' });
     }
   }

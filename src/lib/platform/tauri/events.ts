@@ -5,6 +5,7 @@ type DockEvents = {
   'vault-locked': void;
   'dock-summoned': void;
   'show-settings': void;
+  'bookmarks-changed': void;
 };
 
 export function listenDockEvent<K extends keyof DockEvents>(name: K, handler: (event: Event<DockEvents[K]>) => void): Promise<UnlistenFn> {

@@ -164,6 +164,7 @@ impl Config {
     }
 
     pub fn load_or_create(path: &Path) -> Result<Self, String> {
+        crate::portable::ensure_no_pending_restore(path)?;
         match fs::read(path) {
             Ok(bytes) => {
                 let mut config: Self = serde_json::from_slice(&bytes)
@@ -241,6 +242,11 @@ impl Config {
     }
 
     pub fn save(&self, path: &Path) -> Result<(), String> {
+        crate::portable::ensure_no_pending_restore(path)?;
+        self.save_for_restore(path)
+    }
+    /// Restore owns the file locks and a durable recovery journal before calling this.
+    pub(crate) fn save_for_restore(&self, path: &Path) -> Result<(), String> {
         self.write_temporary(path)?
             .persist(path)
             .map_err(|e| format!("Cannot save config: {}", e.error))?;

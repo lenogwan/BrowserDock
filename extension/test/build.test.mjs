@@ -34,6 +34,12 @@ test('build produces complete distinct local-only Chromium and Gecko distributio
     for (const match of html.matchAll(/(?:src|href)="([^"]+)"/g)) {
       assert.ok(!match[1].includes('://')); await readFile(join(dir, match[1]));
     }
+    assert.equal(manifest.action.default_popup, 'capture.html');
+    const popup = await readFile(join(dir, manifest.action.default_popup), 'utf8');
+    for (const match of popup.matchAll(/(?:src|href)="([^"]+)"/g)) {
+      assert.ok(!match[1].includes('://')); await readFile(join(dir, match[1]));
+    }
+    new vm.Script(await readFile(join(dir, 'capture-popup.js'), 'utf8'));
     new vm.Script(await readFile(join(dir, 'background.js'), 'utf8'));
     new vm.Script(await readFile(join(dir, 'options.js'), 'utf8'));
   }

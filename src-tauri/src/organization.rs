@@ -10,6 +10,10 @@ use tauri::Manager;
 
 enum Mutation {
     Save(Group),
+    MoveSelection {
+        ids: Vec<String>,
+        group_id: Option<String>,
+    },
     Delete(String),
     Move {
         id: String,
@@ -36,6 +40,9 @@ async fn mutate(app: tauri::AppHandle, private: bool, operation: Mutation) -> Re
             }
             let now = Instant::now();
             let result = match operation {
+                Mutation::MoveSelection { ids, group_id } => {
+                    vault.move_selection(&ids, group_id, now)
+                }
                 Mutation::Save(group) => vault.save_group(group, now),
                 Mutation::Delete(id) => vault.delete_group(&id, now),
                 Mutation::Move {
@@ -60,7 +67,14 @@ async fn mutate(app: tauri::AppHandle, private: bool, operation: Mutation) -> Re
             .iter()
             .filter_map(|v| serde_json::from_value(v.clone()).ok())
             .collect();
+        let undoable = matches!(
+            operation,
+            Mutation::Move { .. } | Mutation::MoveSelection { .. }
+        );
         match operation {
+            Mutation::MoveSelection { ids, group_id } => {
+                groups::move_selection(&mut bookmarks, &next.groups, &ids, group_id)?
+            }
             Mutation::Save(group) => groups::save_group(&mut next.groups, group)?,
             Mutation::Delete(id) => {
                 groups::delete_group(&mut next.groups, &mut bookmarks, &id)?;
@@ -88,7 +102,13 @@ async fn mutate(app: tauri::AppHandle, private: bool, operation: Mutation) -> Re
             }
         }
         groups::patch_organization(&mut next.bookmarks, &bookmarks);
+        let mut history = state.history.lock().map_err(|_| "Undo unavailable")?;
         next.save(&state.path)?;
+        if undoable {
+            history.record(&config, &next);
+        } else {
+            history.clear();
+        }
         *config = next;
         Ok(())
     })
@@ -163,4 +183,49 @@ pub async fn save_browser(app: tauri::AppHandle, browser: Browser) -> Result<(),
     })
     .await
     .map_err(|_| "Browser settings task failed")?
+}
+
+#[tauri::command]
+pub async fn move_bookmarks(
+    app: tauri::AppHandle,
+    ids: Vec<String>,
+    group_id: Option<String>,
+    private: bool,
+) -> Result<(), String> {
+    mutate(app, private, Mutation::MoveSelection { ids, group_id }).await
+}
+#[tauri::command]
+pub async fn undo_organization(app: tauri::AppHandle, private: bool) -> Result<(), String> {
+    let epoch = app
+        .try_state::<DesktopState>()
+        .ok_or("Configuration unavailable")?
+        .gate
+        .ticket();
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app
+            .try_state::<DesktopState>()
+            .ok_or("Configuration unavailable")?;
+        if private {
+            let mut vault = state.vault.lock().map_err(|_| "Vault unavailable")?;
+            if !epoch.is_some_and(|ticket| state.gate.valid(ticket)) {
+                return Err("Vault is locked".into());
+            }
+            let result = vault.undo(Instant::now());
+            notify_lock(&app, &state, &mut vault);
+            result
+        } else {
+            let mut config = state
+                .config
+                .lock()
+                .map_err(|_| "Configuration unavailable")?;
+            let result = state
+                .history
+                .lock()
+                .map_err(|_| "Undo unavailable")?
+                .undo(&mut config, &state.path);
+            result
+        }
+    })
+    .await
+    .map_err(|_| "Undo task failed")?
 }

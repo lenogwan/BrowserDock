@@ -71,7 +71,8 @@ test('disconnect reconnects and stale socket commands cannot act', async () => {
 });
 test('heartbeat sends PING and missing PONG closes stale connection', async () => {
   const f = fixture(); const s = await f.auth(); await f.tick(20000); assert.ok(s.sent.some(x => x.action === 'PING'));
-  await f.tick(40000); assert.equal(s.readyState, 3);
+  await f.tick(40000); assert.equal(s.readyState, 1);
+  await f.tick(30000); assert.equal(s.readyState, 3);
 });
 test('pairing change cancels pending query before browser mutation', async () => {
   const f = fixture(); const s = await f.auth(); let finish;
@@ -109,11 +110,70 @@ test('auth timeout closes connection and alarm wakes disconnected companion', as
   const f = fixture(); const s = await f.start(); await f.tick(5000); assert.equal(s.readyState, 3);
   f.api.alarms.onAlarm.emit({ name: 'browserdock-reconnect' }); assert.equal(f.sockets.length, 2);
 });
+test('alarm probes a healthy connection and replaces a stale half-open socket', async () => {
+  const f = fixture(); const s = await f.auth();
+  const pings = () => s.sent.filter(message => message.action === 'PING').length;
+  const before = pings();
+  f.api.alarms.onAlarm.emit({ name: 'browserdock-reconnect' });
+  assert.equal(pings(), before + 1);
+  f.c.connection.pong = -90001;
+  f.api.alarms.onAlarm.emit({ name: 'browserdock-reconnect' });
+  assert.equal(s.readyState, 3);
+  assert.equal(f.sockets.length, 2, 'alarm reconnects without a background timer');
+  await f.tick(3000);
+  assert.equal(f.sockets.length, 2);
+});
+test('alarm replaces a connection whose authentication timer was suspended', async () => {
+  const f = fixture(); const s = await f.start();
+  f.c.connection.started = -5001;
+  f.api.alarms.onAlarm.emit({ name: 'browserdock-reconnect' });
+  assert.equal(s.readyState, 3);
+  await f.tick(3000);
+  assert.equal(f.sockets.length, 2);
+});
 test('PONG keeps heartbeat alive and malformed messages have no effects', async () => {
   const f = fixture(); const s = await f.auth();
   s.onmessage({ data: 'not-json' }); s.message(null); s.message([]);
   for (let i = 0; i < 5; i++) { await f.tick(20000); s.message({ action: 'PONG' }); }
   assert.equal(s.readyState, 1); assert.equal(f.calls.length, 0);
+});
+test('delayed background heartbeat survives the alarm boundary and resumes normally', async () => {
+  const f = fixture(); const s = await f.auth();
+  await f.tick(60000);
+  f.api.alarms.onAlarm.emit({ name: 'browserdock-reconnect' });
+  assert.equal(s.readyState, 1);
+  s.message({ action: 'PONG' });
+  await f.tick(20000);
+  assert.equal(s.readyState, 1);
+  assert.equal(f.sockets.length, 1);
+});
+test('diagnostics record outage duration, survive background restart and exclude secrets', async () => {
+  let saved = {};
+  const session = { async get() { return saved; }, async set(value) { saved = structuredClone(value); } };
+  const f = fixture(); f.api.storage.session = session;
+  const s = await f.auth();
+  s.onerror(new Error(`sensitive ${pairing.token}`));
+  assert.equal(f.c.status, 'reconnecting');
+  await f.tick(3000);
+  const replacement = f.sockets.at(-1); replacement.open(); replacement.message({ type: 'AUTH_OK' });
+  await f.c.diagnosticWrites;
+  assert.deepEqual(saved.connectionDiagnostics.at(-1), { at: 3000, reason: 'connected', durationMs: 3000 });
+  assert.ok(saved.connectionDiagnostics.some(entry => entry.reason === 'socket_error'));
+  assert.ok(!JSON.stringify(saved).includes(pairing.token));
+  const restarted = fixture(); restarted.api.storage.session = session;
+  await restarted.start(); await restarted.c.diagnosticWrites;
+  assert.equal(saved.connectionDiagnostics.at(-1).reason, 'background_start');
+  assert.ok(saved.connectionDiagnostics.some(entry => entry.durationMs === 3000));
+});
+test('diagnostics stay bounded and storage failure cannot block recovery', async () => {
+  const f = fixture();
+  f.api.storage.session = { async get() { throw Error('unavailable'); }, async set() { throw Error('unavailable'); } };
+  const s = await f.auth();
+  for (let i = 0; i < 70; i++) f.c.record('socket_closed');
+  await f.c.diagnosticWrites;
+  assert.equal(f.c.diagnostics.length, 50);
+  s.close(); await f.tick(3000);
+  assert.equal(f.sockets.length, 2);
 });
 test('clearing pairing disconnects and prevents alarm reconnects', async () => {
   const f = fixture(); const s = await f.auth();
@@ -427,10 +487,12 @@ test('status replies are local and contain no pairing secrets', async () => {
   listener({ type: 'BROWSERDOCK_STATUS' }, { id: 'other' }, value => replies.push(value));
   assert.equal(replies.length, 0);
   listener({ type: 'BROWSERDOCK_STATUS' }, { id: 'companion' }, value => replies.push(value));
-  assert.deepEqual(replies, [{ state: 'connected' }]);
+  assert.equal(replies[0].state, 'connected');
+  assert.ok(Array.isArray(replies[0].diagnostics));
+  assert.ok(!JSON.stringify(replies).includes(pairing.token));
   f.c.configure(null);
   listener({ type: 'BROWSERDOCK_STATUS' }, { id: 'companion' }, value => replies.push(value));
-  assert.deepEqual(replies.at(-1), { state: 'unpaired' });
+  assert.equal(replies.at(-1).state, 'unpaired');
 });
 
 test('legacy servers receive unchanged refreshes to recover dropped snapshots', async () => {
@@ -654,4 +716,103 @@ test('grouped Edge opens missing tabs in an eligible browser window', async () =
   s.message(groupRequest({action:'FOCUS_OR_OPEN',url:'https://one.test/',match_mode:'exact'})); await flush(); await flush();
   assert.equal(s.sent.at(-1).result,'OPENED_NEW_TAB');
   assert.equal(f.calls.filter(c=>c[0]==='group').length,1);
+});
+
+test('capture reads public groups and preserves authenticated browser/container on save', async () => {
+  const f = fixture([tab(1, 'https://example.com/', { cookieStoreId: 'firefox-container-2' })]);
+  f.api.tabs.get = async () => tab(1, 'https://example.com/', { cookieStoreId: 'firefox-container-2' });
+  const s = await f.start(); s.message({ type: 'AUTH_OK', capabilities: ['capture_public_v1'] }); await flush();
+  const context = f.c.captureTab({ type: 'BROWSERDOCK_CAPTURE_CONTEXT' }); await flush();
+  const request = s.sent.at(-1); assert.equal(request.action, 'CAPTURE_GROUPS');
+  s.message({ action: 'CAPTURE_RESULT', id: request.id, ok: true, payload: { groups: [{ id: 'work', name: 'Work' }] } });
+  const draft = await context;
+  assert.deepEqual(draft, { contextId: f.c.connection.captureContextId, tabId: 1, url: 'https://example.com/', title: 'Example', browser: 'mullvad', groups: [{ id: 'work', name: 'Work' }] });
+  const saving = f.c.captureTab({ type: 'BROWSERDOCK_CAPTURE_SAVE', contextId: draft.contextId, tabId: 1, url: 'https://example.com/', title: ' Title ', groupId: 'work' }); await flush();
+  assert.deepEqual(s.sent.at(-1), { action: 'CAPTURE_SAVE', id: request.id, title: 'Title', url: 'https://example.com/', group_id: 'work', incognito: false, container: 'firefox-container-2' });
+  s.message({ action: 'CAPTURE_RESULT', id: request.id, ok: true, payload: { result: 'SAVED' } });
+  assert.equal((await saving).result, 'SAVED');
+});
+
+test('capture drafts cannot cross reconnects, pairing changes or background restarts', async () => {
+  for (const replacement of ['reconnect', 'pairing', 'restart']) {
+    const f = fixture([tab(1, 'https://example.com/')]); f.c.uuid = () => crypto.randomUUID();
+    f.api.tabs.get = async () => tab(1, 'https://example.com/');
+    const s = await f.start(); s.message({ type: 'AUTH_OK', capabilities: ['capture_public_v1'] }); await flush();
+    let saves = 0;
+    const request = async (_ctx, action) => action === 'CAPTURE_GROUPS' ? { groups: [] } : (saves++, { result: 'SAVED' });
+    f.c.captureRequest = request;
+    const draft = await f.c.captureTab({ type: 'BROWSERDOCK_CAPTURE_CONTEXT' });
+    let c = f.c;
+    if (replacement === 'restart') {
+      const restarted = fixture([tab(1, 'https://example.com/')]); restarted.c.uuid = () => crypto.randomUUID(); restarted.api.tabs.get = f.api.tabs.get;
+      const socket = await restarted.start(); socket.message({ type: 'AUTH_OK', capabilities: ['capture_public_v1'] }); await flush(); c = restarted.c;
+    } else {
+      if (replacement === 'pairing') f.c.configure({ ...pairing, browser: 'edge' });
+      else { s.close(); await f.tick(3000); }
+      const socket = f.sockets.at(-1); socket.open(); socket.message({ type: 'AUTH_OK', capabilities: ['capture_public_v1'] }); await flush();
+    }
+    c.captureRequest = request;
+    await assert.rejects(c.captureTab({ type: 'BROWSERDOCK_CAPTURE_SAVE', contextId: draft.contextId, tabId: draft.tabId, url: draft.url, title: draft.title, groupId: null }), /Connection changed/);
+    assert.equal(saves, 0);
+    const fresh = await c.captureTab({ type: 'BROWSERDOCK_CAPTURE_CONTEXT' });
+    assert.equal((await c.captureTab({ type: 'BROWSERDOCK_CAPTURE_SAVE', contextId: fresh.contextId, tabId: fresh.tabId, url: fresh.url, title: fresh.title, groupId: null })).result, 'SAVED');
+    assert.equal(saves, 1);
+  }
+});
+
+test('capture rejects private/unsafe tabs, navigation and unsupported desktop before sending', async () => {
+  const f = fixture([tab(1, 'https://example.com/', { incognito: true })]); const s = await f.auth();
+  await assert.rejects(f.c.captureTab({ type: 'BROWSERDOCK_CAPTURE_CONTEXT' }), /Private-window/);
+  f.api.tabs.query = async () => [tab(1, 'file:///private')];
+  await assert.rejects(f.c.captureTab({ type: 'BROWSERDOCK_CAPTURE_CONTEXT' }), /HTTP/);
+  f.api.tabs.query = async () => [tab(1, 'https://example.com/')];
+  await assert.rejects(f.c.captureTab({ type: 'BROWSERDOCK_CAPTURE_CONTEXT' }), /Update/);
+  f.api.tabs.get = async () => tab(1, 'https://new.example/');
+  await assert.rejects(f.c.captureTab({ type: 'BROWSERDOCK_CAPTURE_SAVE', tabId: 1, url: 'https://old.example/', title: 'Title', groupId: null }), /navigated/);
+  assert.equal(s.sent.filter(message => message.action?.startsWith('CAPTURE')).length, 0);
+});
+
+test('capture timeout and connection replacement mark saves uncertain without replay', async () => {
+  const f = fixture(); const s = await f.start(); s.message({ type: 'AUTH_OK', capabilities: ['capture_public_v1'] }); await flush();
+  const result = f.c.captureRequest(f.c.connection, 'CAPTURE_SAVE', {}).catch(error => error);
+  await f.tick(6000); assert.equal((await result).uncertain, true);
+  const result2 = f.c.captureRequest(f.c.connection, 'CAPTURE_SAVE', {}).catch(error => error);
+  s.close(); assert.equal((await result2).uncertain, true);
+  await f.tick(3000);
+  assert.equal(f.sockets.at(-1).sent.filter(message => message.action === 'CAPTURE_SAVE').length, 0);
+});
+
+test('malformed capture save replies mark the outcome uncertain and clear pending work', async () => {
+  for (const reply of [{}, { ok: 'false', error: 'Rejected' }, { ok: false }, { ok: false, error: '' }, { ok: false, error: 'x'.repeat(513) }, { ok: false, error: 'Rejected', uncertain: 'true' }, { ok: true }, { ok: true, payload: { result: 'UNKNOWN' } }]) {
+    const f = fixture(); const s = await f.start(); s.message({ type: 'AUTH_OK', capabilities: ['capture_public_v1'] }); await flush();
+    const outcome = f.c.captureRequest(f.c.connection, 'CAPTURE_SAVE', {}).catch(error => error);
+    const request = s.sent.at(-1);
+    s.message({ action: 'CAPTURE_RESULT', id: request.id, ...reply });
+    const error = await outcome;
+    assert.equal(error.uncertain, true); assert.match(error.message, /unknown/);
+    assert.equal(f.c.connection.capturePending.size, 0);
+    await f.tick(6000);
+    assert.equal(s.sent.filter(message => message.action === 'CAPTURE_SAVE').length, 1);
+  }
+});
+
+test('explicit capture rejection keeps a save correctable', async () => {
+  const f = fixture(); const s = await f.start(); s.message({ type: 'AUTH_OK', capabilities: ['capture_public_v1'] }); await flush();
+  const outcome = f.c.captureRequest(f.c.connection, 'CAPTURE_SAVE', {}).catch(error => error);
+  s.message({ action: 'CAPTURE_RESULT', id: s.sent.at(-1).id, ok: false, error: 'Choose an existing group.' });
+  const error = await outcome;
+  assert.equal(error.uncertain, false); assert.match(error.message, /existing group/);
+});
+
+test('only the extension capture popup can request a capture', async () => {
+  const f = fixture(); let listener, captures = 0, response;
+  f.api.runtime.id = 'companion'; f.api.runtime.getURL = path => `moz-extension://companion/${path}`;
+  f.api.runtime.onMessage = { addListener(fn) { listener = fn; } };
+  await f.auth(); f.c.captureTab = async () => { captures++; return { result: 'SAVED' }; };
+  const message = { type: 'BROWSERDOCK_CAPTURE_SAVE' };
+  listener(message, { id: 'companion', url: 'https://example.com/' }, () => {});
+  listener(message, { id: 'other', url: f.api.runtime.getURL('capture.html') }, () => {});
+  assert.equal(captures, 0);
+  assert.equal(listener(message, { id: 'companion', url: f.api.runtime.getURL('capture.html') }, value => { response = value; }), true);
+  await flush(); assert.equal(captures, 1); assert.equal(response.ok, true);
 });

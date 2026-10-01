@@ -1,24 +1,35 @@
 <script lang="ts">
   import { invokeCommand } from "../../platform/tauri/commands";
   import { revealItemInDir } from "@tauri-apps/plugin-opener";
-  import type { InstanceDigest } from "../../shared/types";
+  import { onMount } from "svelte";
+  import { setupBrowsers, excludedSetupBrowsers } from './setup.js';
+  import type { Browser, InstanceDigest } from "../../shared/types";
 
   let {
     instances = [],
     companionError = "",
     native = false,
+    browsers = [],
+    reconnecting = [],
+    onconfigure,
   }: {
     instances: InstanceDigest[];
     companionError: string;
     native: boolean;
+    browsers?: Browser[];
+    reconnecting?: string[];
+    onconfigure: () => void;
   } = $props();
 
-  const BROWSERS = [
-    { id: "firefox", name: "Firefox" },
-    { id: "mullvad", name: "Mullvad" },
-    { id: "chrome", name: "Chrome" },
-    { id: "edge", name: "Edge" },
-  ];
+  const preferenceKey = 'browserdock:companion-excluded:v1';
+  let excluded = $state<string[]>([]);
+  onMount(() => { try { excluded = excludedSetupBrowsers(localStorage.getItem(preferenceKey)); } catch {} });
+  const available = $derived(setupBrowsers(browsers, instances, reconnecting));
+  const chosen = $derived(available.filter(browser => !excluded.includes(browser.id)));
+  function choose(id: string, checked: boolean) {
+    excluded = checked ? excluded.filter(value => value !== id) : [...excluded, id];
+    try { localStorage.setItem(preferenceKey, JSON.stringify(excluded)); } catch { /* Session choice still works. */ }
+  }
 
   let busy = $state<string | null>(null);
   let message = $state("");
@@ -27,17 +38,13 @@
   let companionDir = $state("");
   let staged = $state(false);
 
-  function tabsFor(id: string) {
-    return instances
-      .filter((i) => i.browser === id)
-      .reduce((n, i) => n + i.tabs.length, 0);
-  }
   function connected(id: string) {
     return instances.some((i) => i.browser === id);
   }
-  const connectedCount = $derived(BROWSERS.filter((b) => connected(b.id)).length);
+  const connectedCount = $derived(chosen.filter((b) => connected(b.id) && !reconnecting.includes(b.id)).length);
+  const complete = $derived(chosen.length > 0 && connectedCount === chosen.length && !companionError && !error);
   const stagedDone = $derived(staged || connectedCount > 0);
-  const step = $derived(!stagedDone ? 1 : connectedCount === 0 ? 2 : 3);
+  const step = $derived(!stagedDone ? 1 : !complete ? 2 : 3);
 
   async function run(key: string, task: () => Promise<string | void>) {
     if (!native) {
@@ -61,6 +68,12 @@
     await run(`copy-${id}`, async () => {
       await invokeCommand("pairing_copy", { browserId: id });
       return `Pairing code for ${id} is on your clipboard. Paste it into the companion's Import box.`;
+    });
+  }
+  async function testConnection(id: string, name: string) {
+    await run(`test-${id}`, async () => {
+      const count = await invokeCommand('companion_test_connection', { browserId: id });
+      return `${name}: connection test passed for ${count} instance${count === 1 ? '' : 's'}. This checks the local connection; it does not open or focus tabs.`;
     });
   }
   async function openPage(id: string) {
@@ -96,20 +109,27 @@
 
 <section class="companion" aria-label="Companion setup">
   <div class="progress" role="status">
-    {#if connectedCount === BROWSERS.length}
-      <strong>All browsers connected ✓</strong><span>Tab reuse is fully on.</span>
+    {#if !chosen.length}
+      <strong>{available.length ? 'Choose a browser' : 'No browsers detected'}</strong><span>Select the browsers you want to connect.</span>
+    {:else if complete}
+      <strong>Ready ✓</strong><span>All selected browsers connected.</span>
     {:else}
       <strong>Step {step} of 3</strong><span>
-        {connectedCount} of {BROWSERS.length} browsers connected{stagedDone ? "" : " · start with staging below"}.
+        {connectedCount} of {chosen.length} selected browsers connected{stagedDone ? "" : " · start with staging below"}.
       </span>
     {/if}
   </div>
   {#if companionError}<p class="error" role="alert">{companionError}</p>{/if}
+  <fieldset class="browser-choices">
+    <legend>Browsers you use</legend>
+    {#each available as browser}<label><input type="checkbox" checked={!excluded.includes(browser.id)} onchange={(event) => choose(browser.id, event.currentTarget.checked)} />{browser.name}</label>{/each}
+    <button class="link" onclick={onconfigure}>Configure or detect browsers</button>
+  </fieldset>
 
-  <ol class="steps">
+  {#if chosen.length}<ol class="steps">
     <li class:done={stagedDone} aria-current={step === 1 ? "step" : undefined}>
       <div class="step-head"><span class="n">{stagedDone ? "✓" : "1"}</span><strong>Stage the companion folder</strong></div>
-      {#if !stagedDone}
+      {#if !complete}
         <p>Bundled with the installer — gives Load unpacked a permanent folder.</p>
         <button class="secondary" disabled={busy !== null} onclick={stageCompanion}>
           {busy === "stage" ? "Staging…" : "Stage companion folder"}
@@ -118,23 +138,24 @@
         <p>Staged at {companionDir} <button class="link" onclick={() => reveal(companionDir)}>Show folder</button></p>
       {/if}
     </li>
-    <li class:done={connectedCount > 0} class:current={step === 2} aria-current={step === 2 ? "step" : undefined}>
-      <div class="step-head"><span class="n">{connectedCount > 0 ? "✓" : "2"}</span><strong>Load it in each browser, then import</strong></div>
-      <p>
+    <li class:done={complete} class:current={step === 2} aria-current={step === 2 ? "step" : undefined}>
+      <div class="step-head"><span class="n">{complete ? "✓" : "2"}</span><strong>Connect your selected browsers</strong></div>
+      <details><summary>Export pairing files (advanced)</summary><p>
         <button class="secondary" disabled={busy !== null} onclick={exportFiles}>
           {busy === "export" ? "Saving…" : "Save all pairing files"}
         </button>
         {#if pairingDir}<span> in {pairingDir} <button class="link" onclick={() => reveal(pairingDir)}>Show folder</button></span>{/if}
-      </p>
+      </p></details>
       <ul class="browsers">
-        {#each BROWSERS as b}
+        {#each chosen as b}
           <li>
             <span class="dot" class:live={connected(b.id)} aria-hidden="true"></span>
             <span class="name">{b.name}</span>
             <span class="meta">
-              {connected(b.id) ? `${tabsFor(b.id)} tabs` : "not connected"}
+              {reconnecting.includes(b.id) ? 'Reconnecting…' : connected(b.id) ? 'Connected' : 'Setup needed'}
             </span>
             <span class="actions">
+              <button class="secondary" disabled={busy !== null} onclick={() => testConnection(b.id, b.name)} aria-label={`Test ${b.name} connection`}>{busy === `test-${b.id}` ? 'Testing…' : 'Test connection'}</button>
               <button
                 class="secondary"
                 disabled={busy !== null}
@@ -155,13 +176,14 @@
           </li>
         {/each}
       </ul>
-      <p class="hint">Chrome/Edge: Developer mode → Load unpacked → chromium folder, then Import. Firefox/Mullvad: Load Temporary Add-on → gecko/manifest.json, then Import.</p>
+      {#if chosen.some(browser => ['chrome', 'edge'].includes(browser.id))}<p class="hint">Chrome/Edge: Developer mode → Load unpacked → chromium folder, then import your pairing code.</p>{/if}
+      {#if chosen.some(browser => ['firefox', 'mullvad'].includes(browser.id))}<p class="hint">Firefox/Mullvad: Load Temporary Add-on → gecko/manifest.json, then import your pairing code. Temporary installs must be loaded again after a browser restart.</p>{/if}
     </li>
-    <li class:done={connectedCount > 0} class:current={step === 3} aria-current={step === 3 ? "step" : undefined}>
-      <div class="step-head"><span class="n">{connectedCount > 0 ? "✓" : "3"}</span><strong>Verify</strong></div>
-      <p>{connectedCount > 0 ? "Connected browsers appear above with live tab counts. Repeat step 2 for the rest." : "Waiting for the first companion — it connects within seconds of saving its pairing."}</p>
+    <li class:done={complete} class:current={step === 3} aria-current={step === 3 ? "step" : undefined}>
+      <div class="step-head"><span class="n">{complete ? "✓" : "3"}</span><strong>Verify</strong></div>
+      <p>{complete ? 'Your selected browsers are connected. Use Test connection for a fresh check.' : 'Connect each selected browser, then use Test connection to check that it responds.'}</p>
     </li>
-  </ol>
+  </ol>{/if}
 
   {#if error}<p class="error" role="alert">{error}</p>{/if}
   {#if message}<p class="notice" role="status">{message}</p>{/if}
@@ -180,6 +202,10 @@
 </section>
 
 <style>
+  .browser-choices {display:flex;flex-wrap:wrap;gap:8px;border:1px solid #ffffff14;border-radius:10px;padding:10px;font-size:11px;}
+  .browser-choices label {display:flex;align-items:center;gap:5px;}
+  .browser-choices legend {color:var(--muted);padding:0 4px;}
+  .progress {flex-wrap:wrap;}
   .companion {
     display: grid;
     gap: 12px;
@@ -251,6 +277,7 @@
   }
   .browsers li {
     display: flex;
+    flex-wrap: wrap;
     align-items: center;
     gap: 8px;
     border: 1px solid #ffffff14;
@@ -276,8 +303,9 @@
     font-size: 10px;
   }
   .actions {
-    margin-left: auto;
+    width: 100%;
     display: flex;
+    flex-wrap: wrap;
     gap: 6px;
   }
   .actions .secondary {

@@ -13,17 +13,20 @@
   // A single shape avoids fragile template type-narrowing.
   type VNode = { key: string; section: Section; item: Bookmark | null; open: boolean; depth: number };
   let {
+    selecting = false, selectedIds = [], selectionPrivate = false, onselect,
     treeIndex, treeExpanded, ontoggletree, onopensubtree,
     sections, instances = [], busy = false, onopengroup, onclosegroup,
     activeKey,
     navTick,
     openTabs,
     onopen,
+    onfocusbookmark,
     onclose,
     onpin,
     onedit,
     groups = [], browsers = [], grouped = false, ongroup, ontoggle, onmove,
   }: {
+    selecting?: boolean; selectedIds?: string[]; selectionPrivate?: boolean; onselect?: (bookmark: Bookmark) => void;
     treeIndex: Map<string, TreeNode>;
     treeExpanded: Record<string, boolean>;
     ontoggletree: (bookmark: Bookmark) => void;
@@ -39,6 +42,7 @@
     onmove: (id: string, groupId: string | null, index: number, privateScope: boolean, parentId?: string | null) => Promise<void>;
     openTabs: { base: Set<string>; stored: Set<string> };
     onopen: (bookmark: Bookmark, force: boolean) => void;
+    onfocusbookmark?: (bookmark: Bookmark) => void;
     onclose: (bookmark: Bookmark) => void;
     onpin: (bookmark: Bookmark) => void;
     onedit: (bookmark: Bookmark) => void;
@@ -288,19 +292,20 @@
       {@const section = node.section}
       {@const nativeGroup = browserGroupFromIndex(item, browserGroups)}
       <!-- svelte-ignore a11y_no_static_element_interactions -->
-      <div data-vkey={node.key} class="result" class:active={node.key === activeKey} class:is-open={node.open} style:padding-left={`${node.depth * 10}px`} class:insertion={dropTarget === `insert:${node.key}`} class:nesting={dropTarget === `nest:${node.key}`} draggable={grouped}
+      <div data-vkey={node.key} class="result" class:active={node.key === activeKey} class:is-open={node.open} style:padding-left={`${node.depth * 10}px`} class:insertion={dropTarget === `insert:${node.key}`} class:nesting={dropTarget === `nest:${node.key}`} draggable={grouped && !selecting}
         ondragstart={e=>{dragging=item;e.dataTransfer?.setData('text/plain',item.id);if(e.dataTransfer)e.dataTransfer.effectAllowed='move'}}
         ondragend={cancelDrag}
         ondragover={e=>dragOver(e,item)}
         ondragleave={e=>{if(!(e.currentTarget as HTMLElement).contains(e.relatedTarget as Node)){clearTimeout(intentTimer);intentKey="";dropTarget="";}}}
         ondrop={e=>dropRow(e,node)}>
+        {#if selecting}<input type="checkbox" aria-label={`Select ${item.title}`} checked={selectionPrivate === !!item.private && selectedIds.includes(item.id)} disabled={busy} onchange={() => onselect?.(item)} />{/if}
         {#if (treeIndex.get(node.key)?.count ?? 0)>0}
           <button class="tree-chevron" aria-expanded={!!treeExpanded[node.key]} title={`Expand or collapse ${item.title}`} aria-label={`Expand or collapse ${item.title}`} onclick={()=>ontoggletree(item)}>
             {#if treeExpanded[node.key]}<ChevronDown size={12}/>{:else}<ChevronRight size={12}/>{/if}
           </button>
         {:else}<span class="tree-spacer" aria-hidden="true"></span>{/if}
         <div class="result-main">
-          <button class="row-open" onclick={(e)=>onopen(item,e.shiftKey)} aria-label={`Open ${item.title} in ${item.target_browser}`}></button>
+          <button class="row-open" onfocus={()=>onfocusbookmark?.(item)} onclick={(e)=>onopen(item,e.shiftKey)} aria-label={`Open ${item.title} in ${item.target_browser}`}></button>
           <span class="monogram" class:private-mark={item.private}
             style:background={avatarWash(item) || undefined}
             style:border-color={avatarEdge(item) || undefined}

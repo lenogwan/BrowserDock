@@ -1,4 +1,47 @@
 use crate::{launcher, LauncherState};
+use tauri::{Emitter, Manager};
+
+pub(crate) fn enable_capture(app: &tauri::AppHandle) {
+    let state = app.state::<LauncherState>();
+    let Ok(server) = &state.companion else {
+        return;
+    };
+    let app = app.clone();
+    server.set_capture_handler(std::sync::Arc::new(move |browser, request, deadline| {
+        let state = app
+            .try_state::<crate::runtime::DesktopState>()
+            .ok_or("BrowserDock configuration is unavailable")?;
+        let mut config = state
+            .config
+            .lock()
+            .map_err(|_| "BrowserDock configuration is unavailable")?;
+        let result = launcher::capture::capture_public(
+            &mut config,
+            &state.path,
+            browser,
+            request,
+            deadline,
+        )?;
+        drop(config);
+        if result.get("result").and_then(serde_json::Value::as_str) == Some("SAVED") {
+            let _ = app.emit("bookmarks-changed", ());
+        }
+        Ok(result)
+    }));
+}
+
+#[tauri::command]
+pub(crate) async fn companion_test_connection(
+    browser_id: String,
+    state: tauri::State<'_, LauncherState>,
+) -> Result<usize, String> {
+    state
+        .companion
+        .as_ref()
+        .map_err(Clone::clone)?
+        .test_connection(&browser_id)
+        .await
+}
 
 #[derive(serde::Serialize)]
 pub(crate) struct CompanionStatus {

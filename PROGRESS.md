@@ -1,6 +1,50 @@
 # BrowserDock current status
 
-Current implementation updated 2026-09-25 for subtree routing. Earlier records below remain historical evidence.
+Current implementation reviewed and hardened 2026-10-02 for forgiving organization, portable library import/backup, companion bookmark capture, launch previews, browser-aware setup and companion background recovery. Earlier records below remain historical evidence.
+
+## Code review fixes (2026-10-02)
+
+- Restore recovery now preflights every required snapshot before replacing files. A pending journal blocks normal config/vault writes, exports, capture and vault creation/unlock; a running process cannot recover using stale in-memory config. This prevents later recovery from discarding acknowledged edits or restoring inconsistent pairing state. Export serialization is bounded to the 12 MB restore limit and borrows public data rather than cloning large future fields.
+- Companion v1.0.11 binds capture drafts to a random connection context, rejecting stale drafts after reconnect, pairing changes or background restart. Desktop capture enforces the 1000-entry public limit, including unreadable entries, while allowing duplicates at the limit. The server wire schema remains compatible; both distributions and Chromium/Gecko/source archives were regenerated.
+- Drag completion reloads authoritative scoped data and cannot roll back over a concurrent capture/edit refresh. Stale private reorder/undo replies cannot recreate editors or change new-session undo state; late public saves/deletes cannot close a newer editor. Lock clears private selection metadata, destination-group drafts and profile hints immediately, and old hint replies are ignored.
+- Fixed 280 px Settings overflow by constraining grid tracks and allowing tab/content shrinkage. The Library smoke now checks the Settings panel itself for overflow.
+- Regression tests reproduced the capture limit/context, pending recovery/export bounds and controller races before fixes. Passed: 116 Rust core tests, 44 UI tests, 107 extension tests, Svelte check with zero diagnostics, production build, Windows MSVC-target app check, touched Rust formatting and `git diff --check`. Organization/portable, existing browser and tree/theme rendered smokes passed. Core Clippy retains the four existing warnings; Windows compilation retains the existing GNU compiler warning.
+- Rendered smokes mock desktop IPC. Native Windows file/download/recovery, real-browser companion acceptance, memory and installer validation remain pending.
+
+## Forgiving organization and portable library (2026-10-01)
+
+- Added one-step undo for public/private bookmark deletion and moves, including editor parent/group/order changes. Public snapshots preserve unknown fields and reject intervening changes; private snapshots remain inside the unlocked vault, never enter its payload, and are dropped/zeroized on lock/expiry. Failed writes retain undo. Row selection moves multiple roots/subtrees atomically within one scope, with rollback on failure and private selection cleanup on lock.
+- Settings → Library previews inert browser-exported HTML, reports rejected entries, checks duplicate/group counts and atomically imports public bookmarks. Exact destination duplicates are skipped, folder names can become groups, and existing unknown/unreadable public entries are retained. Limits: 4 MB HTML, 1000 links, existing bookmark/group bounds.
+- Local JSON library backup retains public bookmark fields/groups and byte-for-byte encrypted vault data; machine settings, browser paths, routing rules and pairing credentials are excluded. Restore previews counts, requires explicit replacement confirmation, optionally replaces the vault, locks private state and keeps local recovery copies. A journal rolls back failed/interrupted two-file restores before startup reads config.
+- Passed: 111 Rust core tests (12 new organization/portable tests), 39 UI tests, Svelte check with zero diagnostics, production build, Windows MSVC-target app check, touched Rust formatting and `git diff --check`. New rendered organization/portable smoke and existing browser smoke passed, covering undo, failed bulk moves, stale private completion, inert HTML, preview/commit, backup download, restore confirmation and 280/400/800 px layouts. Core Clippy retains the four existing warnings; Windows check retains the existing GNU compiler warning.
+- Rendered smokes mock desktop IPC. Native Windows file selection/download and restore recovery, real browser-export compatibility, foregrounding/tray/DPI, installer and memory acceptance remain pending. Encrypted archive contents are authenticated only on unlock with their original password. No extension protocol or vault/config format changed.
+
+## Capture reply validation (2026-10-01)
+
+- Background and popup now treat missing or malformed save replies as uncertain, disabling repeat saves. Only a valid explicit rejection permits correcting and resubmitting the draft; successful replies must identify SAVED or ALREADY_SAVED.
+- Regression tests reproduced the unsafe retry behavior before the fix. Passed: all 106 extension tests and rebuild of both browser distributions. Chromium/Gecko/source archives were regenerated. No Rust or dock UI code changed; native Windows and real-browser acceptance remain pending.
+
+## Companion bookmark capture (2026-10-01)
+
+- Completed companion v1.0.10 toolbar popup: current public HTTP(S) tab, editable title, existing public group/Ungrouped and explicit save. Connection settings remain accessible. Captures retain authenticated browser identity and Firefox/Mullvad container; private tabs are rejected before desktop requests and vault data is never accessed.
+- Desktop negotiates `capture_public_v1`, validates current groups/options, appends root bookmarks with atomic config writes and preserves unknown/unreadable public data. Duplicate destinations return unchanged; IDs cannot overwrite other destinations. Successful captures emit an event to refresh the dock.
+- Added capture regression coverage for popup sender isolation, private/unsafe tabs, navigation, duplicate and failed writes, stale groups, connection changes and uncertain outcomes. Every interrupted runtime save now disables retries regardless of the browser's exception wording.
+- Passed: 104 extension tests, 99 Rust core tests (including five capture tests and live authenticated capture transport), 37 UI tests, Svelte check with zero diagnostics, production build, rendered browser smoke with capture refresh, Windows MSVC app check, touched Rust formatting, distribution rebuild and v1.0.10 extension packaging. Core Clippy completes with only the four existing warnings in unchanged code; the Windows check retains the existing GNU compiler warning.
+- Both browser distributions and Chromium/Gecko/source archives are generated. Native Windows and real Firefox/Chrome/Edge/Mullvad popup/container acceptance remain pending; rendered dock tests mock desktop IPC. No memory measurement, installer validation or Mozilla signing was performed.
+
+## Launch preview and browser setup (2026-10-01)
+
+- Expanded search previews Enter for the selected bookmark/URL, resolving browser overrides, profiles, containers and private windows through existing IPC. Site-match hints distinguish switching from opening; uncertain connection/inventory and connected-profile cases say Open or switch. Stale route results and private-state cleanup are guarded.
+- Companion setup includes detected/configured or connected browsers and remembers which ones users exclude. Readiness is based on selected browsers, with Connected/Reconnecting/Setup needed states and a configuration shortcut. Test connection performs fresh, instance-scoped control-frame probes against all connected instances of one browser, with a five-second deadline and no tab actions; existing companion versions remain compatible.
+- Passed: 37 UI tests, 94 Rust core tests including three new live probe tests, Svelte check, production build, Windows MSVC-target app check and rendered browser smoke covering setup choices, connection-test success/failure, recovery, URL/override previews, stale route replies, vault cleanup and 280/400/800 px layouts. Rust formatting passes. Core Clippy retains the four existing warnings in unchanged code; Windows check retains the existing GNU compiler warning.
+- Rendered tests mock desktop IPC; the live Rust tests cover transport. Native Windows foregrounding and real-browser acceptance remain unverified. No extension version or source change was needed for these two features.
+
+## Companion background reliability (2026-10-01)
+
+- Companion v1.0.9 retains the 20-second heartbeat and one-minute recovery alarm, extends missing-reply tolerance to 90 seconds, and reconnects immediately when the alarm replaces a stale socket. Desktop idle eviction is now 120 seconds, avoiding the previous shared 60-second boundary. Five-second command deadlines and no-replay guarantees are unchanged.
+- Options expose the last 50 connection events (fixed reason codes, timestamps and optional recovery durations) using browser session storage across background restarts, with memory fallback. No URLs, titles, credentials or raw exceptions are retained. The options page shows reconnecting between attempts; the dock gives recently missing browser instances a bounded 15-second reconnecting indication without retaining their inventory.
+- Passed: rebuilt both distributions, 96 extension tests, 32 UI tests, Svelte check with zero diagnostics, production build, Rust core suite including live transport, touched Rust formatting, and the rendered browser smoke including connection loss/recovery. Core Clippy completed with four pre-existing warnings in unchanged code in `pairing.rs`, `ws_server.rs` and `launcher.rs`.
+- Verification used an existing Rust toolchain and Chromium runtime libraries under `/tmp`; they are not repository dependencies. The rendered smoke uses mocked desktop IPC. No native Windows run or multi-hour unfocused-browser acceptance was performed, and the original intermittent disconnect cause is not established. Both the desktop and companion need updating for the full timing change; use the options diagnostics during native acceptance.
 
 ## Implemented
 
@@ -9,6 +53,8 @@ Current implementation updated 2026-09-25 for subtree routing. Earlier records b
 - V3: persisted width/manual expanded height, live resize with commit/cancel, pill/strip overrides and edge anchoring.
 - QA/UI: unused IPC removed, errors surfaced, Windows HTML5 drag enabled, icon/accessibility and narrow-width improvements.
 - Companion reliability (v1.0.3): bounded command deadlines, connection-owned queues, negotiated paged inventory, reduced redundant traffic, live pairing status; close-tabs and Edge windowless fallback are documented in SPEC §4.
+- Companion lifecycle hardening (v1.0.6, 2026-09-26): the browser alarm actively probes healthy sockets and replaces stale/half-open connections after background suspension or sleep/resume, without replaying ambiguous commands. Real multi-hour Firefox/Chrome acceptance remains pending.
+- Browser-aware dock chips (2026-09-26): the collapsed header shows shortcuts only for detected or manually configured browser executables; missing browsers remain configurable in Settings and retain their keyboard override contract.
 - Native tab groups (companion v1.0.4): default-on automatic grouping with Settings toggle, group open/close actions, title/color badges, container-aware inventory, feature-detected fallback, bounded batches and private-session cancellation. See [current contract](SPECIFICATION.md#422-native-browser-tab-groups-companion-v104) and [implementation plan](docs/browser-tab-groups-plan.md).
 - Cold-start group/subtree open (2026-09-22): ungroupable open batches launch one process per argv chunk with every URL as trailing arguments, then wait bounded (~10 s) for the browser's companion and regroup natively; background-only Edge hands off pre-mutation and focus/group errors name the companion result code. Rust suites for this change still need a Windows run (no toolchain in the Linux sandbox).
 - Nested bookmarks: root/child/grandchild trees, validated same-scope parent editing and drag nesting, sibling order, delete/reparent, expansion memory with private cleanup, and explicit subtree opening through the guarded group dispatcher. Normal opening remains one URL; subtree opening allows 50 URLs including the parent. See [implementation plan](docs/deep-groups-plan.md) and SPEC §3.1/§4.3/§5.2.
@@ -20,6 +66,16 @@ Current implementation updated 2026-09-25 for subtree routing. Earlier records b
 - Windows packaging: EXE/MSI build automation, bundled companion resources and pairing helpers. See [installer guide](docs/windows-installer.md).
 
 ## Remaining acceptance and limitations
+
+### Companion lifecycle verification (2026-09-26)
+
+- Passed: deterministic rebuild of both companion distributions and 93 extension tests, including alarm probes for healthy, stale authenticated and stuck unauthenticated sockets.
+- The Rust core suite was not run because `cargo` is unavailable in this Linux environment; the Rust server and wire schema did not change. Real multi-hour Firefox/Chrome testing, sleep/resume and native Windows acceptance remain pending.
+
+### Browser-aware chip verification (2026-09-26)
+
+- Passed: Svelte check with zero diagnostics, 30 UI tests and the production frontend build. The browser smoke fixture covers a Firefox/Edge-only installation and asserts that Mullvad/Chrome chips are absent.
+- The rendered browser smoke could not launch in this Linux environment because the available Chromium binary is missing `libnspr4.so`; native Windows rendering remains pending.
 
 The code changes in [SPEC §6](SPECIFICATION.md#6-codebase-reorganization) are implemented. Native Windows acceptance in phase 7 remains pending, so the refactor is not release-accepted. The dependency map below records the phase 1 baseline.
 

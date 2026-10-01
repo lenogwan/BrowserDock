@@ -625,3 +625,57 @@ pub fn bookmark_tree(
     }
     Ok((tree, hint))
 }
+
+/// Move selection roots and their descendants to the end of a group, atomically.
+/// Selected descendants of selected ancestors stay nested rather than moving twice.
+pub fn move_selection(
+    bookmarks: &mut Vec<Bookmark>,
+    groups: &[Group],
+    ids: &[String],
+    group_id: Option<String>,
+) -> Result<(), String> {
+    if ids.is_empty() || ids.len() > 1000 {
+        return Err("Select 1–1000 bookmarks".into());
+    }
+    validate_target(groups, group_id.as_deref())?;
+    let selected: HashSet<&str> = ids.iter().map(String::as_str).collect();
+    if selected.len() != ids.len()
+        || selected
+            .iter()
+            .any(|id| !bookmarks.iter().any(|b| b.id == *id))
+    {
+        return Err("Selection is stale or contains duplicate IDs".into());
+    }
+    validate_tree(bookmarks)?;
+    let parents: HashMap<&str, Option<&str>> = bookmarks
+        .iter()
+        .map(|b| (b.id.as_str(), b.parent_id.as_deref()))
+        .collect();
+    let roots: Vec<String> = ids
+        .iter()
+        .filter(|id| {
+            let mut parent = parents[id.as_str()];
+            while let Some(p) = parent {
+                if selected.contains(p) {
+                    return false;
+                }
+                parent = parents[p];
+            }
+            true
+        })
+        .cloned()
+        .collect();
+    let mut draft = bookmarks.clone();
+    for id in roots {
+        move_bookmark(
+            &mut draft,
+            groups,
+            &id,
+            group_id.clone(),
+            Some(None),
+            u32::MAX,
+        )?;
+    }
+    *bookmarks = draft;
+    Ok(())
+}

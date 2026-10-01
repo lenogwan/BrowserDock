@@ -396,6 +396,79 @@ function installActions(prototype) {
 }
 
 
+function captureError(message, uncertain = false) {
+  return Object.assign(new Error(message), { uncertain });
+}
+
+function installCapture(prototype) {
+  prototype.captureRequest = function (ctx, action, payload = {}) {
+    if (!this.current(ctx)) return Promise.reject(captureError('Connect this browser to BrowserDock first.'));
+    if (!ctx.capture) return Promise.reject(captureError('Update and restart BrowserDock to enable bookmark capture.'));
+    if (ctx.capturePending.size >= 4) return Promise.reject(captureError('Another capture is in progress.'));
+    const id = this.uuid();
+    if (ctx.capturePending.has(id)) return Promise.reject(captureError('Another capture is in progress.'));
+    return new Promise((resolve, reject) => {
+      const timer = this.clock.setTimeout(() => {
+        ctx.capturePending.delete(id);
+        reject(captureError(action === 'CAPTURE_SAVE' ? 'Save outcome unknown. Check BrowserDock before trying again.' : 'BrowserDock did not respond. Try refreshing.', action === 'CAPTURE_SAVE'));
+      }, 6000);
+      ctx.capturePending.set(id, { resolve, reject, timer, saving: action === 'CAPTURE_SAVE' });
+      if (!this.send(ctx, { action, id, ...payload })) {
+        this.clock.clearTimeout(timer); ctx.capturePending.delete(id);
+        reject(captureError('Connection lost. Check BrowserDock before trying again.', action === 'CAPTURE_SAVE'));
+      }
+    });
+  };
+
+  prototype.captureReply = function (ctx, data) {
+    const pending = ctx.capturePending.get(data.id);
+    if (!pending) return;
+    ctx.capturePending.delete(data.id); this.clock.clearTimeout(pending.timer);
+    if (data.ok === true && (!pending.saving || ['SAVED', 'ALREADY_SAVED'].includes(data.payload?.result))) {
+      pending.resolve(data.payload);
+    } else if (data.ok === false && typeof data.error === 'string' && data.error.trim() && data.error.length <= 512 && (data.uncertain === undefined || typeof data.uncertain === 'boolean')) {
+      pending.reject(captureError(data.error, data.uncertain === true));
+    } else {
+      pending.reject(captureError(pending.saving ? 'Save outcome unknown. Check BrowserDock before trying again.' : 'BrowserDock returned an invalid capture reply. Try refreshing.', pending.saving));
+    }
+  };
+
+  prototype.captureTab = async function (message) {
+    const ctx = this.connection;
+    if (!ctx || !this.current(ctx)) throw captureError('Connect this browser to BrowserDock first.');
+    let tab;
+    try {
+      tab = message.type === 'BROWSERDOCK_CAPTURE_CONTEXT'
+        ? (await this.api.tabs.query({ active: true, currentWindow: true }))[0]
+        : await this.api.tabs.get(message.tabId);
+    } catch { throw captureError('This tab is no longer available. Reopen the popup.'); }
+    if (!this.current(ctx)) throw captureError('Connection changed. Reopen the popup.');
+    if (!tab || !Number.isSafeInteger(tab.id)) throw captureError('No active browser tab is available.');
+    if (tab.incognito) throw captureError('Private-window tabs cannot be saved to public bookmarks. Use BrowserDock’s vault.');
+    if (!safeUrl(tab.url)) throw captureError('Only HTTP(S) pages with URLs up to 2 KB can be captured.');
+    if (message.type === 'BROWSERDOCK_CAPTURE_CONTEXT') {
+      const response = await this.captureRequest(ctx, 'CAPTURE_GROUPS');
+      if (!this.current(ctx)) throw captureError('Connection changed. Reopen the popup.');
+      ctx.captureContextId ??= this.uuid();
+      if (!Array.isArray(response?.groups) || response.groups.length > 50 || response.groups.some(group => typeof group.id !== 'string' || group.id.length > 128 || typeof group.name !== 'string' || [...group.name].length > 64)) throw captureError('BrowserDock returned an invalid group list.');
+      let title = '', bytes = 0;
+      for (const char of (tab.title?.trim() || new URL(tab.url).hostname)) {
+        bytes += encoder.encode(char).length;
+        if (bytes > 512) break;
+        title += char;
+      }
+      return { contextId: ctx.captureContextId, tabId: tab.id, url: tab.url, title, browser: ctx.pairing.browser, groups: response.groups };
+    }
+    if (message.url !== tab.url) throw captureError('The tab navigated to another page. Reopen the popup before saving.');
+    if (typeof message.contextId !== 'string' || message.contextId !== ctx.captureContextId) throw captureError('Connection changed. Refresh the popup before saving.');
+    if (typeof message.title !== 'string' || !message.title.trim() || encoder.encode(message.title.trim()).length > 512) throw captureError('Enter a title up to 512 bytes.');
+    if (message.groupId !== null && (typeof message.groupId !== 'string' || !message.groupId || message.groupId.length > 128)) throw captureError('Choose an existing group.');
+    const container = ['firefox', 'mullvad'].includes(ctx.pairing.browser) && typeof tab.cookieStoreId === 'string' && !['firefox-default', 'firefox-private'].includes(tab.cookieStoreId) ? tab.cookieStoreId : null;
+    return this.captureRequest(ctx, 'CAPTURE_SAVE', { title: message.title.trim(), url: tab.url, group_id: message.groupId, incognito: false, container });
+  };
+}
+
+
 class Companion {
   // Timer functions are WebIDL methods: Firefox throws when they are invoked
   // with a plain-object receiver, so the default clock delegates with the
@@ -406,6 +479,7 @@ class Companion {
     this.connection = null; this.pairing = null; this.revision = 0;
     this.recentWindows = []; this.status = 'unpaired';
     this.reconnectTimer = null; this.syncTimer = null; this.heartbeatTimer = null;
+    this.diagnostics = []; this.diagnosticWrites = Promise.resolve(); this.outageStarted = null;
   }
 
   async start() {
@@ -424,10 +498,14 @@ class Companion {
       if (Number.isSafeInteger(id) && id >= 0) this.recentWindows = [id, ...this.recentWindows.filter(w => w !== id)].slice(0, 100);
     });
     this.api.runtime.onMessage?.addListener((message, sender, reply) => {
-      if (message?.type === 'BROWSERDOCK_STATUS' && sender.id === this.api.runtime.id) reply({ state: this.status });
+      if (message?.type === 'BROWSERDOCK_STATUS' && sender.id === this.api.runtime.id) reply({ state: this.status, diagnostics: this.diagnostics });
+      if (['BROWSERDOCK_CAPTURE_CONTEXT', 'BROWSERDOCK_CAPTURE_SAVE'].includes(message?.type) && sender.id === this.api.runtime.id && sender.url === this.api.runtime.getURL('capture.html')) {
+        this.captureTab(message).then(payload => reply({ ok: true, payload }), error => reply({ ok: false, error: error.message, uncertain: error.uncertain === true }));
+        return true;
+      }
     });
     this.api.alarms.onAlarm.addListener(alarm => {
-      if (alarm.name === 'browserdock-reconnect') { this.connect(); this.scheduleSync(); }
+      if (alarm.name === 'browserdock-reconnect') { this.maintainConnection(); this.scheduleSync(); }
     });
     for (const name of ['onCreated', 'onUpdated', 'onRemoved']) this.api.contextualIdentities?.[name]?.addListener(() => { const ctx = this.connection; if (ctx && this.current(ctx)) void this.syncContainers(ctx); });
     this.api.runtime.onStartup.addListener(() => this.connect());
@@ -436,13 +514,28 @@ class Companion {
     Promise.resolve(this.api.alarms.create('browserdock-reconnect', { periodInMinutes: 1 })).catch(() => {});
     const revision = this.revision;
     try {
+      const saved = await this.api.storage.session?.get('connectionDiagnostics');
+      this.diagnostics = (saved?.connectionDiagnostics ?? []).filter(entry =>
+        Number.isFinite(entry.at) && ['background_start', 'connected', 'socket_closed', 'socket_error', 'connect_failed', 'auth_timeout', 'heartbeat_timeout', 'command_timeout', 'backpressure', 'send_failed', 'request_limit'].includes(entry.reason)
+      ).slice(-49).map(({ at, reason, durationMs }) => ({ at, reason, ...(Number.isFinite(durationMs) && durationMs >= 0 ? { durationMs } : {}) }));
+    } catch { /* Diagnostics must never prevent connecting. */ }
+    this.record('background_start');
+    try {
       const data = await this.api.storage.local.get('pairing');
       if (revision === this.revision) this.configure(data.pairing);
     } catch { /* Remain unpaired when storage is unavailable. */ }
   }
 
+  record(reason, durationMs) {
+    this.diagnostics.push({ at: this.clock.now(), reason, ...(durationMs === undefined ? {} : { durationMs: Math.max(0, durationMs) }) });
+    this.diagnostics = this.diagnostics.slice(-50);
+    const entries = this.diagnostics.slice();
+    this.diagnosticWrites = this.diagnosticWrites.then(() => this.api.storage.session?.set({ connectionDiagnostics: entries })).catch(() => {});
+  }
+
   configure(pairing) {
     this.revision++;
+    this.outageStarted = null;
     this.pairing = validPairing(pairing) ? { ...pairing } : null;
     this.disconnect(); this.connect();
     if (!this.pairing) this.status = 'unpaired';
@@ -454,6 +547,11 @@ class Companion {
       this.clock.clearTimeout(this[key]); this[key] = null;
     }
     if (previous) {
+      for (const pending of previous.capturePending.values()) {
+        this.clock.clearTimeout(pending.timer);
+        pending.reject(Object.assign(new Error(pending.saving ? 'Save outcome unknown. Check BrowserDock before trying again.' : 'Connection lost. Try refreshing.'), { uncertain: pending.saving }));
+      }
+      previous.capturePending.clear();
       this.clock.clearTimeout(previous.authTimer);
       for (const timer of previous.commandTimers) this.clock.clearTimeout(timer);
       previous.socket.close();
@@ -475,39 +573,61 @@ class Companion {
     this.clock.clearTimeout(this.reconnectTimer); this.reconnectTimer = null;
     let socket;
     try { socket = this.transport(`ws://127.0.0.1:${this.pairing.port}`); }
-    catch { this.retry(); return; }
-    const ctx = { socket, pairing: this.pairing, authenticated: false, seen: new Map(), cancelled: new Set(), pending: 0, pong: this.clock.now(), syncDirty: false, queue: Promise.resolve(), commandTimers: new Set(), lastSnapshot: null, paged: false };
+    catch { this.record('connect_failed'); this.retry(); return; }
+    const ctx = { socket, pairing: this.pairing, authenticated: false, started: this.clock.now(), seen: new Map(), cancelled: new Set(), pending: 0, pong: this.clock.now(), syncDirty: false, queue: Promise.resolve(), commandTimers: new Set(), lastSnapshot: null, paged: false };
     this.connection = ctx;
+    ctx.capturePending = new Map(); ctx.capture = false;
     this.status = 'connecting';
-    ctx.authTimer = this.clock.setTimeout(() => { if (this.connection === ctx) this.drop(ctx); }, 5000);
+    ctx.authTimer = this.clock.setTimeout(() => { if (this.connection === ctx) this.drop(ctx, 'auth_timeout'); }, 5000);
     socket.onopen = () => {
       if (this.connection !== ctx) return;
       this.status = 'authenticating';
       this.send(ctx, { type: 'AUTH', token: ctx.pairing.token, browser: ctx.pairing.browser, instance_id: this.uuid(), capabilities: ['tab_groups_v1'] });
     };
     socket.onmessage = event => this.receive(ctx, event.data);
-    socket.onerror = () => this.drop(ctx);
+    socket.onerror = () => this.drop(ctx, 'socket_error');
     socket.onclose = () => {
       if (this.connection !== ctx) return;
-      this.disconnect(); this.retry();
+      this.drop(ctx, 'socket_closed');
     };
   }
 
   retry() {
     if (this.pairing && this.reconnectTimer === null) {
+      this.status = 'reconnecting';
       this.reconnectTimer = this.clock.setTimeout(() => { this.reconnectTimer = null; this.connect(); }, 3000);
     }
   }
 
-  drop(ctx) { if (this.connection === ctx) { this.disconnect(); this.retry(); } }
+  maintainConnection() {
+    const ctx = this.connection;
+    if (!ctx) { this.connect(); return; }
+    // Timers can be suspended while an MV3 background context is idle or the
+    // machine sleeps. The browser alarm is an independent recovery path: it
+    // must not let a half-open WebSocket block connect() indefinitely.
+    if (!this.current(ctx)) {
+      if (ctx.socket.readyState > 1 || this.clock.now() - ctx.started >= 5000) { this.drop(ctx, 'auth_timeout'); this.connect(); }
+      return;
+    }
+    if (this.clock.now() - ctx.pong >= 90000) { this.drop(ctx, 'heartbeat_timeout'); this.connect(); return; }
+    this.send(ctx, { action: 'PING' });
+  }
+
+  drop(ctx, reason = 'socket_closed') {
+    if (this.connection === ctx) {
+      this.record(reason);
+      this.outageStarted ??= this.clock.now();
+      this.disconnect(); this.retry();
+    }
+  }
 
   send(ctx, message) {
     if (this.connection !== ctx || ctx.socket.readyState !== 1) return false;
     try {
-      if (ctx.socket.bufferedAmount > 1024 * 1024) { this.drop(ctx); return false; }
+      if (ctx.socket.bufferedAmount > 1024 * 1024) { this.drop(ctx, 'backpressure'); return false; }
       ctx.socket.send(JSON.stringify(message));
       return true;
-    } catch { this.drop(ctx); return false; }
+    } catch { this.drop(ctx, 'send_failed'); return false; }
   }
 
   receive(ctx, raw) {
@@ -519,11 +639,15 @@ class Companion {
       if (data.type === 'AUTH_OK') {
         ctx.authenticated = true; ctx.pong = this.clock.now(); this.clock.clearTimeout(ctx.authTimer);
         ctx.paged = Array.isArray(data.capabilities) && data.capabilities.includes('paged_tabs_v1');
+        ctx.capture = Array.isArray(data.capabilities) && data.capabilities.includes('capture_public_v1');
         this.status = 'connected';
+        this.record('connected', this.outageStarted === null ? undefined : this.clock.now() - this.outageStarted);
+        this.outageStarted = null;
         this.scheduleSync(); this.heartbeat(ctx); void this.syncContainers(ctx);
       }
       return;
     }
+    if (data.action === 'CAPTURE_RESULT') { this.captureReply(ctx, data); return; }
     if (data.action === 'CANCEL_REQUEST') { if (ctx.seen.has(data.id) && ctx.seen.get(data.id) === null) ctx.cancelled.add(data.id); return; }
     if (data.action === 'CONTAINERS_LIST') { void this.syncContainers(ctx); return; }
     if (data.action === 'PONG') { ctx.pong = this.clock.now(); return; }
@@ -533,7 +657,7 @@ class Companion {
       return;
     }
     // Never evict IDs on a live connection: eviction could execute a replay twice.
-    if (ctx.seen.size >= 1024 || ctx.pending >= 32) { this.drop(ctx); return; }
+    if (ctx.seen.size >= 1024 || ctx.pending >= 32) { this.drop(ctx, 'request_limit'); return; }
     ctx.seen.set(data.id, null); ctx.pending++;
     const now = this.clock.now();
     const invalidDeadline = data.deadline_ms !== undefined && (!Number.isSafeInteger(data.deadline_ms) || data.deadline_ms < 0);
@@ -548,7 +672,7 @@ class Companion {
         else {
           // A timed-out API call cannot be undone. Invalidate its context so
           // it cannot issue another mutation after eventually resolving.
-          timer = this.clock.setTimeout(() => this.drop(ctx), data.expiresAt - this.clock.now());
+          timer = this.clock.setTimeout(() => this.drop(ctx, 'command_timeout'), data.expiresAt - this.clock.now());
           ctx.commandTimers.add(timer);
           response = await this[handler](ctx, data);
         }
@@ -565,8 +689,8 @@ class Companion {
   heartbeat(ctx) {
     this.heartbeatTimer = this.clock.setTimeout(() => {
       if (!this.current(ctx)) return;
-      if (this.clock.now() - ctx.pong >= 60000) { this.drop(ctx); return; }
-      this.send(ctx, { action: 'PING' }); this.heartbeat(ctx);
+      if (this.clock.now() - ctx.pong >= 90000) { this.drop(ctx, 'heartbeat_timeout'); return; }
+      if (this.send(ctx, { action: 'PING' })) this.heartbeat(ctx);
     }, 20000);
   }
 
@@ -606,7 +730,7 @@ class Companion {
     const deadline = this.clock.now() + 5000;
     for (let page = 0; page < pages; page++) {
       while (this.current(ctx) && ctx.socket.bufferedAmount > 512 * 1024) {
-        if (this.clock.now() >= deadline) { this.drop(ctx); return false; }
+        if (this.clock.now() >= deadline) { this.drop(ctx, 'backpressure'); return false; }
         await new Promise(resolve => this.clock.setTimeout(resolve, 25));
       }
       if (!this.current(ctx) || !this.send(ctx, { action: 'TABS_SYNC_PAGE', browser: ctx.pairing.browser, snapshot_id, page, pages, tabs: tabs.slice(page * 200, (page + 1) * 200) })) return false;
@@ -626,15 +750,11 @@ class Companion {
 }
 
 installActions(Companion.prototype);
+installCapture(Companion.prototype);
 
 const extensionApi = globalThis.browser ?? globalThis.chrome;
 if (!extensionApi?.tabs || !extensionApi?.storage || typeof WebSocket === "undefined") {
   throw new Error("BrowserDock Companion requires the tabs/storage extension APIs and WebSocket.");
 }
 const companion = new Companion(extensionApi, url => new WebSocket(url));
-if (extensionApi.action?.onClicked) {
-  extensionApi.action.onClicked.addListener(() => {
-    Promise.resolve(extensionApi.runtime.openOptionsPage()).catch(() => {});
-  });
-}
 void companion.start();
