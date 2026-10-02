@@ -4,13 +4,15 @@
   import BrowserPanel from "../browsers/BrowserPanel.svelte";
   import CompanionSetup from "../companion/CompanionSetup.svelte";
   import ShortcutRecorder from "./ShortcutRecorder.svelte";
+  import { DOCK_SHORTCUTS, normalizeDockShortcuts, shortcutProblems } from './shortcuts.js';
   import { THEMES } from "./themes";
   import type { ThemeId, Settings, Browser, Group, WindowSize, InstanceDigest } from "../../shared/types";
 
-  type Tab = "appearance" | "behavior" | "browsers" | "companion" | "library";
+  type Tab = "appearance" | "behavior" | "shortcuts" | "browsers" | "companion" | "library";
   const TABS: { id: Tab; label: string }[] = [
     { id: "appearance", label: "Appearance" },
     { id: "behavior", label: "Behavior" },
+    { id: "shortcuts", label: "Shortcuts" },
     { id: "browsers", label: "Browsers" },
     { id: "companion", label: "Companion" },
     { id: "library", label: "Library" },
@@ -58,18 +60,19 @@
   } = $props();
 
   // svelte-ignore state_referenced_locally
-  let form = $state({ ...settings, window_size: { ...settings.window_size } });
+  let form = $state({ ...settings, dock_shortcuts: normalizeDockShortcuts(settings.dock_shortcuts), window_size: { ...settings.window_size } });
   // Baseline intentionally snapshots the props at mount; later prop changes
   // (grip commits) are merged into it by the sync effect below.
   // svelte-ignore state_referenced_locally
   let snapshot = $state(
-    JSON.stringify({ ...settings, window_size: { ...settings.window_size } }),
+    JSON.stringify({ ...settings, dock_shortcuts: normalizeDockShortcuts(settings.dock_shortcuts), window_size: { ...settings.window_size } }),
   );
   let tab = $state<Tab>("appearance");
   let busy = $state(false);
   let message = $state("");
   let restartNotice = $state("");
   let error = $state("");
+  const shortcutErrors = $derived(shortcutProblems(form));
 
   // Grip commits flow in through props: adopt them into the draft AND the
   // baseline so resizing never fakes a dirty state. `untrack` keeps the
@@ -119,7 +122,7 @@
       error = "Saved settings snapshot is corrupt; close and reopen Settings.";
       return;
     }
-    form = { ...saved, window_size: { ...saved.window_size } };
+    form = { ...saved, dock_shortcuts: normalizeDockShortcuts(saved.dock_shortcuts), window_size: { ...saved.window_size } };
     onpreview(null);
     onpreviewtheme(null);
     void onsizecancel().catch(() => {});
@@ -132,12 +135,13 @@
     void onsizepreview({ ...form.window_size }).catch((e) => (error = String(e)));
   }
   async function save() {
+    if (busy || shortcutErrors.length) return;
     busy = true;
     error = "";
     message = "";
     restartNotice = "";
     try {
-      const outcome = await onsave({ ...form, window_size: { ...form.window_size } });
+      const outcome = await onsave({ ...form, dock_shortcuts: { ...form.dock_shortcuts }, window_size: { ...form.window_size } });
       snapshot = JSON.stringify(form);
       message = "Saved.";
       // A non-empty notice names what still needs a restart (e.g. a shortcut
@@ -279,17 +283,46 @@
           /><span>minutes</span></span
         >
       </div>
+    </div>
+  {:else if tab === "shortcuts"}
+    <div class="tab-body shortcuts-page" role="tabpanel" id="settings-panel" aria-labelledby={`settings-tab-${tab}`} tabindex="0">
+      <p class="hint">Choose a shortcut, press the keys you want, then Save. Dock shortcuts work while browsing bookmarks; Windows shortcuts work across apps.</p>
+      <p class="hint">Letters and numbers need a modifier. Tab and text-editing combinations stay reserved.</p>
+      <section class="shortcut-section" aria-label="Windows shortcuts">
+      <h2>Across Windows</h2>
       <ShortcutRecorder
         label="Summon shortcut"
+        description="Show and focus BrowserDock from any app."
         value={form.global_shortcut}
         onchange={(v) => (form.global_shortcut = v)}
       />
       <ShortcutRecorder
         label="Panic lock shortcut"
+        action="panic_shortcut"
+        description="Hide the dock and immediately lock the vault."
         value={form.panic_shortcut}
         onchange={(v) => (form.panic_shortcut = v)}
       />
-      <p class="hint">Shortcuts apply instantly when you save — no restart. If another app holds a shortcut, you'll be told exactly that.</p>
+      <p class="hint">Windows shortcuts apply on Save. If another app holds the keys, BrowserDock reports which shortcut could not be activated.</p>
+      </section>
+      {#each [{id:'navigation',title:'Navigate the dock'}, {id:'bookmarks',title:'Bookmarks and sub-pages'}, {id:'browsers',title:'Browser overrides'}] as section}
+        <section class="shortcut-section" aria-label={section.title}>
+          <h2>{section.title}</h2>
+          {#each DOCK_SHORTCUTS.filter(item => item.group === section.id) as shortcut}
+            <ShortcutRecorder label={shortcut.label} description={shortcut.description} action={shortcut.id} global={false} value={form.dock_shortcuts[shortcut.id]} onchange={value => form.dock_shortcuts = {...form.dock_shortcuts, [shortcut.id]:value}} />
+          {/each}
+          {#if section.id === 'browsers'}<p class="hint">Alt+1 / 2 / 3 / 4 also choose Firefox / Mullvad / Chrome / Edge while their default bindings are in use.</p>{/if}
+        </section>
+      {/each}
+      <section class="shortcut-section fixed-shortcuts" aria-label="Standard controls">
+        <h2>Standard controls</h2>
+        <p><kbd>Tab</kbd> / <kbd>Shift+Tab</kbd><span>Move between controls</span></p>
+        <p><kbd>Space</kbd><span>Toggle a focused selection or checkbox</span></p>
+        <p><kbd>Enter</kbd><span>Activate a focused button or submit an editor</span></p>
+        <p><kbd>Escape</kbd><span>Hide; press twice within 400 ms to lock the vault. Also cancels dragging or shortcut recording.</span></p>
+        <p class="hint">Text editing and focus keys stay available in editors. Bookmark shortcuts work in the search field or list; Hide and Collapse dock also work in settings.</p>
+      </section>
+      <button class="secondary reset-shortcuts" type="button" onclick={() => { form.dock_shortcuts = normalizeDockShortcuts(null); form.global_shortcut = 'Ctrl+Shift+Space'; form.panic_shortcut = 'Ctrl+Alt+L'; }}>Reset shortcuts to defaults</button>
     </div>
   {:else if tab === "browsers"}
     <div class="tab-body" role="tabpanel" id="settings-panel" aria-labelledby={`settings-tab-${tab}`} tabindex="0">
@@ -306,14 +339,15 @@
   </fieldset>
 
   {#if error}<p class="error" role="alert">{error}</p>{/if}
+  {#if shortcutErrors.length}<div class="shortcut-errors" role="alert">{#each shortcutErrors as problem}<p>{problem}</p>{/each}</div>{/if}
   {#if restartNotice}<p class="warning" role="alert">{restartNotice}</p>{/if}
   {#if message}<p class="notice" role="status">{message}</p>{/if}
 
   {#if dirty}<div class="dirty-bar" role="region" aria-label="Unsaved changes">
-      <span>Unsaved changes</span>
+      <span class="dirty-summary">Unsaved changes{#if shortcutErrors.length}<small>{shortcutErrors[0]}</small>{/if}</span>
       <span class="dirty-actions">
         <button type="button" class="secondary small" disabled={busy || libraryBusy} onclick={discard}>Discard</button>
-        <button type="button" class="primary small" disabled={busy || libraryBusy} onclick={save}>
+        <button type="button" class="primary small" disabled={busy || libraryBusy || !!shortcutErrors.length} onclick={save}>
           {busy ? "Saving…" : "Save"}
         </button>
       </span>
@@ -321,6 +355,15 @@
 </div>
 
 <style>
+  .shortcut-section {display:grid;gap:14px;padding:13px;border:1px solid #ffffff17;border-radius:10px;min-width:0;}
+  .shortcut-section h2 {margin:0;font-size:12px;font-weight:600;color:var(--text);}
+  .fixed-shortcuts p {display:flex;flex-wrap:wrap;align-items:baseline;gap:6px;margin:0;font-size:10px;line-height:1.5;color:var(--muted);}
+  .fixed-shortcuts p span {flex:1;min-width:100px;}
+  .fixed-shortcuts kbd {color:var(--text);font:10px Consolas,monospace;}
+  .reset-shortcuts {justify-self:start;font-size:11px;}
+  .shortcut-errors {font-size:11px;color:#e6a49b;line-height:1.5;}
+  .dirty-summary {min-width:0;}
+  .dirty-summary small {display:block;color:#e6a49b;font-size:10px;line-height:1.4;overflow-wrap:anywhere;margin-top:4px;}
   .settings-controls {border:0;padding:0;margin:0;min-width:0;display:grid;gap:12px;}
   .theme-section {min-width:0;border:0;padding:0;margin:0;}
   .theme-section legend {font-size:11px;color:var(--text);margin-bottom:7px;}
@@ -375,7 +418,7 @@
     background: #ffffff0e;
     color: var(--text);
   }
-  @media (max-width: 380px) {
+  @media (max-width: 520px) {
     .tabs {flex-wrap:wrap;}
     .tabs button {flex:1 1 30%;min-height:32px;}
   }

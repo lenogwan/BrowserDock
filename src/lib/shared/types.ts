@@ -37,6 +37,7 @@ export type Settings = {
   vault_timeout_minutes: number;
   global_shortcut: string;
   panic_shortcut: string;
+  dock_shortcuts?: Record<string, string>;
 };
 export type WindowSize = { width: number; height: number | null };
 export type VaultStatus = {

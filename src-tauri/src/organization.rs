@@ -9,6 +9,7 @@ use std::time::Instant;
 use tauri::Manager;
 
 enum Mutation {
+    CollapseAll,
     Save(Group),
     MoveSelection {
         ids: Vec<String>,
@@ -40,6 +41,7 @@ async fn mutate(app: tauri::AppHandle, private: bool, operation: Mutation) -> Re
             }
             let now = Instant::now();
             let result = match operation {
+                Mutation::CollapseAll => vault.collapse_groups(now),
                 Mutation::MoveSelection { ids, group_id } => {
                     vault.move_selection(&ids, group_id, now)
                 }
@@ -60,18 +62,30 @@ async fn mutate(app: tauri::AppHandle, private: bool, operation: Mutation) -> Re
             .lock()
             .map_err(|_| "Configuration unavailable")?;
         let mut next = config.clone();
+        let collapse_only = matches!(operation, Mutation::CollapseAll);
+        if collapse_only && next.groups.iter().all(|group| group.collapsed) {
+            return Ok(());
+        }
         // Read typed entries for ordering, then patch the original JSON so unknown
         // fields and malformed entries are preserved instead of disappearing.
-        let mut bookmarks: Vec<Bookmark> = next
-            .bookmarks
-            .iter()
-            .filter_map(|v| serde_json::from_value(v.clone()).ok())
-            .collect();
+        let mut bookmarks: Vec<Bookmark> = if collapse_only {
+            Vec::new()
+        } else {
+            next.bookmarks
+                .iter()
+                .filter_map(|v| serde_json::from_value(v.clone()).ok())
+                .collect()
+        };
         let undoable = matches!(
             operation,
             Mutation::Move { .. } | Mutation::MoveSelection { .. }
         );
         match operation {
+            Mutation::CollapseAll => {
+                for group in &mut next.groups {
+                    group.collapsed = true;
+                }
+            }
             Mutation::MoveSelection { ids, group_id } => {
                 groups::move_selection(&mut bookmarks, &next.groups, &ids, group_id)?
             }
@@ -101,7 +115,9 @@ async fn mutate(app: tauri::AppHandle, private: bool, operation: Mutation) -> Re
                 )?;
             }
         }
-        groups::patch_organization(&mut next.bookmarks, &bookmarks);
+        if !collapse_only {
+            groups::patch_organization(&mut next.bookmarks, &bookmarks);
+        }
         let mut history = state.history.lock().map_err(|_| "Undo unavailable")?;
         next.save(&state.path)?;
         if undoable {
@@ -114,6 +130,11 @@ async fn mutate(app: tauri::AppHandle, private: bool, operation: Mutation) -> Re
     })
     .await
     .map_err(|_| "Organization task failed")?
+}
+
+#[tauri::command]
+pub async fn collapse_groups(app: tauri::AppHandle, private: bool) -> Result<(), String> {
+    mutate(app, private, Mutation::CollapseAll).await
 }
 
 #[tauri::command]

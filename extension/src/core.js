@@ -3,6 +3,9 @@ import { inventory } from './inventory.js';
 import { installActions } from './actions.js';
 import { installCapture } from './capture.js';
 
+const HEARTBEAT_INTERVAL = 20000, HEARTBEAT_TIMEOUT = 90000, PROBE_TIMEOUT = 5000;
+const STABLE_CONNECTION = 60000;
+
 export class Companion {
   // Timer functions are WebIDL methods: Firefox throws when they are invoked
   // with a plain-object receiver, so the default clock delegates with the
@@ -12,8 +15,10 @@ export class Companion {
     this.api = api; this.transport = transport; this.clock = clock; this.uuid = uuid;
     this.connection = null; this.pairing = null; this.revision = 0;
     this.recentWindows = []; this.status = 'unpaired';
-    this.reconnectTimer = null; this.syncTimer = null; this.heartbeatTimer = null;
+    this.reconnectTimer = null; this.syncTimer = null; this.heartbeatTimer = null; this.heartbeatProbeTimer = null;
+    this.reconnectFailures = 0;
     this.diagnostics = []; this.diagnosticWrites = Promise.resolve(); this.outageStarted = null;
+    this.diagnosticsLoading = false; this.diagnosticsDirty = false; this.diagnosticWriting = false;
   }
 
   async start() {
@@ -47,12 +52,8 @@ export class Companion {
     // Alarms survive worker suspension; recreate on every worker start/browser restart.
     Promise.resolve(this.api.alarms.create('browserdock-reconnect', { periodInMinutes: 1 })).catch(() => {});
     const revision = this.revision;
-    try {
-      const saved = await this.api.storage.session?.get('connectionDiagnostics');
-      this.diagnostics = (saved?.connectionDiagnostics ?? []).filter(entry =>
-        Number.isFinite(entry.at) && ['background_start', 'connected', 'socket_closed', 'socket_error', 'connect_failed', 'auth_timeout', 'heartbeat_timeout', 'command_timeout', 'backpressure', 'send_failed', 'request_limit'].includes(entry.reason)
-      ).slice(-49).map(({ at, reason, durationMs }) => ({ at, reason, ...(Number.isFinite(durationMs) && durationMs >= 0 ? { durationMs } : {}) }));
-    } catch { /* Diagnostics must never prevent connecting. */ }
+    // Optional diagnostics must not serialize pairing behind slow session storage.
+    void this.loadDiagnostics();
     this.record('background_start');
     try {
       const data = await this.api.storage.local.get('pairing');
@@ -60,15 +61,54 @@ export class Companion {
     } catch { /* Remain unpaired when storage is unavailable. */ }
   }
 
+  async loadDiagnostics() {
+    this.diagnosticsLoading = true;
+    let timer;
+    try {
+      const saved = await Promise.race([
+        this.api.storage.session?.get('connectionDiagnostics'),
+        new Promise(resolve => { timer = this.clock.setTimeout(() => resolve(null), 5000); })
+      ]);
+      const history = Array.isArray(saved?.connectionDiagnostics) ? saved.connectionDiagnostics : [];
+      const valid = history.filter(entry => entry &&
+        Number.isFinite(entry.at) && ['background_start', 'connected', 'socket_closed', 'socket_error', 'connect_failed', 'auth_timeout', 'heartbeat_timeout', 'command_timeout', 'backpressure', 'send_failed', 'request_limit', 'heartbeat_probe', 'background_delayed'].includes(entry.reason)
+      ).slice(-49).map(({ at, reason, durationMs }) => ({ at, reason, ...(Number.isFinite(durationMs) && durationMs >= 0 ? { durationMs } : {}) }));
+      // Preserve events recorded while the history read was pending.
+      this.diagnostics = [...valid, ...this.diagnostics].slice(-50);
+    } catch { /* Diagnostics must never prevent connecting. */ }
+    finally {
+      this.clock.clearTimeout(timer);
+      this.diagnosticsLoading = false;
+      this.persistDiagnostics();
+    }
+  }
+
   record(reason, durationMs) {
     this.diagnostics.push({ at: this.clock.now(), reason, ...(durationMs === undefined ? {} : { durationMs: Math.max(0, durationMs) }) });
     this.diagnostics = this.diagnostics.slice(-50);
-    const entries = this.diagnostics.slice();
-    this.diagnosticWrites = this.diagnosticWrites.then(() => this.api.storage.session?.set({ connectionDiagnostics: entries })).catch(() => {});
+    this.diagnosticsDirty = true;
+    this.persistDiagnostics();
+  }
+
+  persistDiagnostics() {
+    if (this.diagnosticsLoading || this.diagnosticWriting || !this.diagnosticsDirty) return;
+    this.diagnosticWriting = true;
+    // At most one write is in flight. Slow storage retains only the latest
+    // bounded memory log, instead of a promise/snapshot for every event.
+    this.diagnosticWrites = (async () => {
+      try {
+        while (this.diagnosticsDirty) {
+          this.diagnosticsDirty = false;
+          try { await this.api.storage.session?.set({ connectionDiagnostics: this.diagnostics.slice() }); }
+          catch { /* Keep the memory log when session storage is unavailable. */ }
+        }
+      } finally { this.diagnosticWriting = false; }
+    })();
   }
 
   configure(pairing) {
     this.revision++;
+    this.reconnectFailures = 0;
     this.outageStarted = null;
     this.pairing = validPairing(pairing) ? { ...pairing } : null;
     this.disconnect(); this.connect();
@@ -77,7 +117,7 @@ export class Companion {
 
   disconnect() {
     const previous = this.connection; this.connection = null;
-    for (const key of ['reconnectTimer', 'syncTimer', 'heartbeatTimer']) {
+    for (const key of ['reconnectTimer', 'syncTimer', 'heartbeatTimer', 'heartbeatProbeTimer']) {
       this.clock.clearTimeout(this[key]); this[key] = null;
     }
     if (previous) {
@@ -129,7 +169,9 @@ export class Companion {
   retry() {
     if (this.pairing && this.reconnectTimer === null) {
       this.status = 'reconnecting';
-      this.reconnectTimer = this.clock.setTimeout(() => { this.reconnectTimer = null; this.connect(); }, 3000);
+      const delay = Math.min(30000, 3000 * 2 ** this.reconnectFailures);
+      this.reconnectFailures = Math.min(4, this.reconnectFailures + 1);
+      this.reconnectTimer = this.clock.setTimeout(() => { this.reconnectTimer = null; this.connect(); }, delay);
     }
   }
 
@@ -143,8 +185,12 @@ export class Companion {
       if (ctx.socket.readyState > 1 || this.clock.now() - ctx.started >= 5000) { this.drop(ctx, 'auth_timeout'); this.connect(); }
       return;
     }
-    if (this.clock.now() - ctx.pong >= 90000) { this.drop(ctx, 'heartbeat_timeout'); this.connect(); return; }
-    this.send(ctx, { action: 'PING' });
+    // An alarm can recover a probe whose timer was suspended. Otherwise a
+    // stale heartbeat gets one fresh reply window before declaring an outage.
+    if (ctx.heartbeatProbe != null && this.clock.now() - ctx.heartbeatProbe >= PROBE_TIMEOUT) {
+      this.drop(ctx, 'heartbeat_timeout'); this.connect(); return;
+    }
+    this.checkHeartbeat(ctx);
   }
 
   drop(ctx, reason = 'socket_closed') {
@@ -171,7 +217,7 @@ export class Companion {
     if (!data || typeof data !== 'object' || Array.isArray(data)) return;
     if (!ctx.authenticated) {
       if (data.type === 'AUTH_OK') {
-        ctx.authenticated = true; ctx.pong = this.clock.now(); this.clock.clearTimeout(ctx.authTimer);
+        ctx.authenticated = true; ctx.authenticatedAt = this.clock.now(); ctx.pong = this.clock.now(); this.clock.clearTimeout(ctx.authTimer);
         ctx.paged = Array.isArray(data.capabilities) && data.capabilities.includes('paged_tabs_v1');
         ctx.capture = Array.isArray(data.capabilities) && data.capabilities.includes('capture_public_v1');
         this.status = 'connected';
@@ -184,7 +230,13 @@ export class Companion {
     if (data.action === 'CAPTURE_RESULT') { this.captureReply(ctx, data); return; }
     if (data.action === 'CANCEL_REQUEST') { if (ctx.seen.has(data.id) && ctx.seen.get(data.id) === null) ctx.cancelled.add(data.id); return; }
     if (data.action === 'CONTAINERS_LIST') { void this.syncContainers(ctx); return; }
-    if (data.action === 'PONG') { ctx.pong = this.clock.now(); return; }
+    if (data.action === 'PONG') {
+      ctx.pong = this.clock.now(); ctx.heartbeatProbe = null;
+      this.clock.clearTimeout(this.heartbeatProbeTimer); this.heartbeatProbeTimer = null;
+      // Brief connections must not reset backoff and create a tight flap loop.
+      if (ctx.pong - ctx.authenticatedAt >= STABLE_CONNECTION) this.reconnectFailures = 0;
+      return;
+    }
     if (!['FOCUS_OR_OPEN', 'CLOSE_TABS', 'OPEN_GROUP', 'CLOSE_GROUP'].includes(data.action) || typeof data.id !== 'string' || !data.id.length || data.id.length > 128) return;
     if (ctx.seen.has(data.id)) {
       const response = ctx.seen.get(data.id); if (response) this.send(ctx, response);
@@ -220,12 +272,45 @@ export class Companion {
     });
   }
 
+  checkHeartbeat(ctx) {
+    if (!this.current(ctx)) return false;
+    if (ctx.heartbeatProbe != null) return true;
+    if (this.clock.now() - ctx.pong < HEARTBEAT_TIMEOUT) {
+      const sent = this.send(ctx, { action: 'PING' });
+      if (sent) void this.keepGeckoActive(ctx);
+      return sent;
+    }
+    // A delayed callback may run before an already queued PONG. Check the
+    // live socket with a fresh ping rather than closing on the old timestamp.
+    ctx.heartbeatProbe = this.clock.now(); this.record('heartbeat_probe');
+    if (!this.send(ctx, { action: 'PING' })) return false;
+    void this.keepGeckoActive(ctx);
+    this.heartbeatProbeTimer = this.clock.setTimeout(() => {
+      if (this.current(ctx) && ctx.heartbeatProbe != null) this.drop(ctx, 'heartbeat_timeout');
+    }, PROBE_TIMEOUT);
+    return true;
+  }
+
+  async keepGeckoActive(ctx) {
+    // Gecko MV3 event pages reset idle on parent extension API calls, unlike
+    // Chromium's WebSocket activity keepalive. No storage write or permission
+    // is needed; discard platform info and coalesce stalled calls globally.
+    if (!this.current(ctx) || !['firefox', 'mullvad'].includes(ctx.pairing.browser)
+      || this.lifecyclePending || !this.api.runtime.getPlatformInfo) return;
+    this.lifecyclePending = true;
+    try { await this.api.runtime.getPlatformInfo(); }
+    catch { /* The recovery alarm still handles unloads/API failures. */ }
+    finally { this.lifecyclePending = false; }
+  }
+
   heartbeat(ctx) {
+    const expected = this.clock.now() + HEARTBEAT_INTERVAL;
     this.heartbeatTimer = this.clock.setTimeout(() => {
       if (!this.current(ctx)) return;
-      if (this.clock.now() - ctx.pong >= 90000) { this.drop(ctx, 'heartbeat_timeout'); return; }
-      if (this.send(ctx, { action: 'PING' })) this.heartbeat(ctx);
-    }, 20000);
+      const delayed = this.clock.now() - expected;
+      if (delayed >= 10000) this.record('background_delayed', delayed);
+      if (this.checkHeartbeat(ctx)) this.heartbeat(ctx);
+    }, HEARTBEAT_INTERVAL);
   }
 
   scheduleSync() {
@@ -238,8 +323,10 @@ export class Companion {
       ctx.syncDirty = false;
       try {
         const tabs = await this.api.tabs.query({});
+        if (!this.current(ctx)) return;
         let groups = [];
         try { groups = await this.api.tabGroups?.query({}) ?? []; } catch { /* Unsupported/disabled grouping. */ }
+        if (!this.current(ctx)) return;
         const snapshot = inventory(tabs, ctx.pairing.includePrivate, ctx.paged ? 2000 : 200, groups);
         const serialized = JSON.stringify(snapshot);
         // Older servers may silently throttle received snapshots. Keep their

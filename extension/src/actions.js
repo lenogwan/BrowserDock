@@ -191,8 +191,21 @@ export function installActions(prototype) {
     // first mutation cannot duplicate tabs, while a later failure is
     // genuinely ambiguous and must stay an error.
     let createdAny = false;
-    for (const url of [...new Set(request.urls.map(url => safeUrl(url).href))]) {
-      let tab = all.find(t => t.windowId === window.id && !t.pinned && (!t.incognito || ctx.pairing.includePrivate === true) && (cookieStoreId ? t.cookieStoreId === cookieStoreId : !t.cookieStoreId || ['firefox-default', 'firefox-private'].includes(t.cookieStoreId)) && safeUrl(t.url)?.href === url);
+    // A request can contain 50 URLs and the browser can have thousands of tabs.
+    // Parse eligible tabs once; preserve the first eligible exact match and all
+    // existing window, pin, private-access and container boundaries. Retain
+    // only requested matches and stop once every URL has a match.
+    const urls = new Set(request.urls.map(url => safeUrl(url).href));
+    const byUrl = new Map();
+    for (const tab of all) {
+      if (tab.windowId !== window.id || tab.pinned || (tab.incognito && ctx.pairing.includePrivate !== true)
+        || (cookieStoreId ? tab.cookieStoreId !== cookieStoreId : tab.cookieStoreId && !['firefox-default', 'firefox-private'].includes(tab.cookieStoreId))) continue;
+      const url = safeUrl(tab.url)?.href;
+      if (url && urls.has(url) && !byUrl.has(url)) byUrl.set(url, tab);
+      if (byUrl.size === urls.size) break;
+    }
+    for (const url of urls) {
+      let tab = byUrl.get(url);
       if (!tab) {
         this.checkRequest(ctx, request);
         try {

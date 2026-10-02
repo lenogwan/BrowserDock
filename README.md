@@ -110,7 +110,7 @@ Full details, private-tab opt-in, and limits: [`extension/README.md`](extension/
 
 ## Daily use
 
-The expanded dock previews what **Enter** will do for the selected bookmark or URL, including your browser override and profile/container. “Switch to existing…” uses the reported site match; the browser checks again when you open. “Open or switch” means the available inventory or connection state cannot establish which action will happen. Private-window launches are labeled explicitly. Hover over the preview for details, including the limitation that a Chromium profile setting cannot guarantee which connected profile handles tab reuse.
+The expanded dock previews the destination for opening the selected bookmark or URL, including your browser override and profile/container. “Switch to existing…” uses the reported site match; the browser checks again when you open. “Open or switch” means the available inventory or connection state cannot establish which action will happen. Private-window launches are labeled explicitly. Hover over the preview for details, including the limitation that a Chromium profile setting cannot guarantee which connected profile handles tab reuse.
 
 | Action | How |
 | :--- | :--- |
@@ -118,6 +118,9 @@ The expanded dock previews what **Enter** will do for the selected bookmark or U
 | Open with specific browser | `Alt+F` Firefox · `Alt+M` Mullvad · `Alt+C` Chrome · `Alt+E` Edge (or `Alt+1–4`) |
 | Open entire bookmark subtree | Parent row's `+N` button or `Shift+Enter` |
 | Force new tab for a leaf bookmark or typed URL | `Shift+Enter` |
+| Open only the selected bookmark in a new tab (including parents) | `Ctrl+Enter` |
+| Collapse all groups and sub-pages in this view | `Ctrl+Shift+K` |
+| Collapse dock to its pill | `Ctrl+Shift+D` |
 | Expand / collapse a bookmark parent | Chevron or `Right Arrow` / `Left Arrow` |
 | Panic lock vault | `Esc` twice quickly, or `Ctrl+Alt+L` |
 | Vault | Click the lock icon or type `/vault` (new vaults need a nonnumeric passphrase of at least 8 characters; existing PINs still unlock) |
@@ -134,13 +137,17 @@ The expanded dock previews what **Enter** will do for the selected bookmark or U
 
 Settings → Appearance previews theme and opacity until Save; Discard restores the saved appearance. The three visibility settings are independent. Section labels wrap at narrow widths and stay visible while scrolling. Use Left/Right, Home or End when a section tab has focus.
 
+Settings → **Shortcuts** lets you change the defaults above, result navigation, subtree controls and browser overrides. Click a binding, press your keys and choose **Save**. **Discard** restores saved keys; **Reset shortcuts** prepares the defaults for saving. Duplicate bindings and reserved text-editing keys are explained before Save. Dock actions work while browsing bookmarks; Summon and Panic lock work across Windows and apply on Save. If Windows rejects a key, the notice shows which bindings remain active. Escape always hides (or cancels a drag), and double Escape retains panic lock even if you choose another Hide shortcut. Standard Tab and focused-button Enter/Space still work.
+
 Create groups using **Add group**, move bookmarks by dragging or the editor's Group select, and use group editing controls to rename, reorder, or delete. Deleting a group keeps its bookmarks under Ungrouped. Search includes group names. Private groups are available only while the vault is unlocked.
 
-Use **Undo public action** or **Undo private action** after deleting or moving a bookmark. Undo restores one action, including affected descendants and order; later edits invalidate it. Private undo disappears when the vault locks. **Select bookmarks** lets you click rows or checkboxes to select them, then move them to a group or Ungrouped. Enter/Space toggles a focused selection row. The count includes sub-pages that move with a selected parent. Moving reports the destination and offers undo; selections stay within one public/private scope.
+The compact bookmark toolbar keeps **Select**, the **Open** filter and the result count above the list. The destination preview appears in the footer; hover it for the full route. Use the **Undo** arrows after deleting or moving a bookmark; the padlock marks private undo. Undo restores one action, including affected descendants and order; later edits invalidate it. Private undo disappears when the vault locks. **Select** lets you click rows or checkboxes to select them, then move them to a group or Ungrouped. Enter/Space toggles a focused selection row. The count includes sub-pages that move with a selected parent. Moving reports the destination and offers undo; selections stay within one public/private scope.
+
+To create a similar bookmark, open its editor and choose **Clone bookmark**. The new draft uses your current edits and retains the group, tags, pinning, browser options and public/private scope. Rename the selected title, adjust the URL and choose **Save bookmark**. Cancel discards the draft. Only the bookmark is copied; its sub-pages stay with the original. A child copy keeps its parent and follows that parent’s browser/profile/container. Private copies disappear from the editor on lock.
 
 **Settings → Library** imports bookmark HTML exported by Firefox, Mullvad, Chrome or Edge. Choose the browser and grouping, use **Check import** to see new bookmarks and duplicates, then **Import bookmarks**. Expand **Preview bookmarks** to inspect individual links. Changing an option requires checking again. Exact duplicate destinations are skipped. Nested folders become groups using their immediate folder name; equal names merge. Unsupported URLs and oversized entries are reported and skipped. Imports are public and limited to 1000 links per file.
 
-**Download library backup** saves public bookmarks/groups and the encrypted vault locally. Public bookmarks are readable in the backup; only vault content stays encrypted. Keep the original vault password: the backup cannot recover it. Machine settings, browser paths, routing rules and pairing credentials are excluded. To restore, choose the JSON backup, review the current-versus-backup counts and confirm replacement. Restore replaces the public library; it does not merge bookmarks. Replacing the vault is optional and off by default. Keep the Library view open until an operation finishes. Restore locks the vault and keeps the old config/vault in a local recovery folder whose path is shown afterward; interrupted restores recover on the next startup. If recovery remains pending after a failure, further saves, exports and vault unlocks are blocked until you restart BrowserDock. These recovery copies stay until you remove them manually.
+**Save library backup** writes public bookmarks/groups and the encrypted vault to your Windows Downloads folder. The app confirms the full path only after the file is saved; **Show in folder** selects it in File Explorer. Each save creates a separate file, preserving previous backups. Public bookmarks are readable in the backup; only vault content stays encrypted. Keep the original vault password: the backup cannot recover it. Machine settings, browser paths, routing rules and pairing credentials are excluded. To restore, choose the JSON backup, review the current-versus-backup counts and confirm replacement. Restore replaces the public library; it does not merge bookmarks. Replacing the vault is optional and off by default. Keep the Library view open until an operation finishes. Restore locks the vault and keeps the old config/vault in a local recovery folder whose path is shown afterward; interrupted restores recover on the next startup. If recovery remains pending after a failure, further saves, exports and vault unlocks are blocked until you restart BrowserDock. These recovery copies stay until you remove them manually.
 
 Nest bookmarks using the editor's **Parent** select or by holding a dragged row over another row's body briefly. Trees support children and grandchildren; the group follows the parent. Drop on a row's top edge to reorder siblings, or on a group header to return to root. Choose **Parent → None** to unnest using the keyboard or touch. Escape cancels dragging. Deleting a parent keeps its children under its former parent, or at root.
 
@@ -165,18 +172,24 @@ Keep `%APPDATA%\BrowserDock` restricted to your Windows user account using its f
 npm run check            # Svelte + TypeScript diagnostics
 npm run test:ui          # frontend search/URL unit tests
 npm run test:extension   # companion protocol tests (also: npm run build:extension first after editing extension/src)
+node test/performance-inventory.mjs  # synthetic extension inventory timings
+cargo test --locked --manifest-path src-tauri/core/Cargo.toml --test phase4 benchmark_idle_digest_polls -- --ignored --nocapture
 cargo test --locked --manifest-path src-tauri/core/Cargo.toml  # Rust core tests; needs cargo
 ```
+
+For a rendered 1,000-bookmark scroll/search/selection check, run `node test/performance-smoke.mjs` against `npm run dev` with Playwright available (or set `BROWSERDOCK_PLAYWRIGHT_MODULE` to an external installation). Synthetic timings and headless smokes do not replace Windows performance or memory acceptance.
 
 ## Troubleshooting
 
 Companion v1.0.9 adds **Connection diagnostics** on its options page. If a browser intermittently disconnects, inspect the recent reason codes and recovery durations there. The last 50 events stay within the browser session and contain no URLs or pairing tokens. Update/reload the companion and rebuild/restart the desktop app to receive both sides of the recovery-timing improvements. The dock briefly shows **reconnecting** when a previously connected browser disappears; tab reuse is unavailable for the missing connection during that time.
 
+For repeated Firefox companion disconnects, update/reload companion v1.0.13. This adds a Gecko event-page keepalive, a fresh heartbeat check after long scheduling pauses and bounded reconnect backoff. In `about:addons`, open BrowserDock Companion's Preferences/Options → Connection diagnostics: repeated `background_start` suggests background restarts, `background_delayed` reports timer lateness, and `command_timeout` identifies a timed-out tab action. Socket closure alone does not establish the cause. Details: [companion guide](extension/README.md).
+
 | Symptom | Fix |
 | :--- | :--- |
 | `cargo` not found | Install Rust MSVC toolchain and reopen the terminal |
 | `npm.ps1 cannot be loaded…` | PowerShell execution policy is blocking npm — use `npm.cmd …`, or `powershell -ExecutionPolicy Bypass`, or `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned` |
-| Summon shortcut does nothing | Another app owns it — change it in Settings (applies after restart); tray still works |
+| Summon shortcut does nothing | Another app may own it — change it in Settings → Shortcuts and Save. Activation notices report the keys actually active; tray still works. Restart retries saved keys |
 | Companion shows disconnected | Dock not running, stale pairing, or extension disabled — re-copy the pairing code from Settings → Companion (if the dock logged a port change after a conflict, re-pair every companion to the new port) |
 | "Invalid config.json" on start | Edit was malformed — fix the JSON (the file is never overwritten); delete only as a last resort (regenerates with a fresh token, breaking pairings) |
 | Vault locked message right after 3 wrong tries | 30 s lockout by design; wait and retry |
@@ -193,4 +206,4 @@ Companion v1.0.9 adds **Connection diagnostics** on its options page. If a brows
 | [`docs/phase-6-7.md`](docs/phase-6-7.md) | Dock and vault usage notes |
 | [`.agents/skills/browser-dock-builder/SKILL.md`](.agents/skills/browser-dock-builder/SKILL.md) | Implementation skill, with identical discovery copies in `.codex/` and `.opencode/` |
 
-To save the current page, click the companion toolbar button, edit its title, choose a public group (or Ungrouped), and select **Save to BrowserDock**. Use companion v1.0.11 with an updated desktop. After reconnecting or changing pairing, refresh an open capture popup before saving. Capture keeps the connected browser and Firefox/Mullvad container; private-window tabs must be managed through the dock vault. If the save outcome is unknown, inspect the dock before saving again. Connection settings remain available from the popup.
+To save the current page, click the companion toolbar button, edit its title, choose a public group (or Ungrouped), and select **Save to BrowserDock**. Use companion v1.0.13 or newer with an updated desktop. After reconnecting or changing pairing, refresh an open capture popup before saving. Capture keeps the connected browser and Firefox/Mullvad container; private-window tabs must be managed through the dock vault. If the save outcome is unknown, inspect the dock before saving again. Connection settings remain available from the popup.

@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use std::{
     fs,
     io::{Read, Write},
-    path::Path,
+    path::{Path, PathBuf},
 };
 const MAX_FILE: u64 = 12 * 1024 * 1024;
 const MAX_VAULT: usize = 2 * 1024 * 1024;
@@ -145,6 +145,40 @@ pub fn export(config: &Config, vault_path: &Path) -> Result<String, String> {
     })?;
     String::from_utf8(writer.0).map_err(|_| "Cannot encode backup".into())
 }
+/// Save an archive through a staged, flushed file. A unique name and
+/// no-clobber commit preserve every previous backup in the Downloads folder.
+pub fn export_to_directory(
+    config: &Config,
+    vault_path: &Path,
+    directory: &Path,
+) -> Result<PathBuf, String> {
+    let archive = export(config, vault_path)?;
+    fs::create_dir_all(directory).map_err(|error| {
+        format!(
+            "Cannot create backup folder {}: {error}",
+            directory.display()
+        )
+    })?;
+    let timestamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let path = directory.join(format!(
+        "browserdock-library-{timestamp}-{}.json",
+        uuid::Uuid::new_v4()
+    ));
+    let mut staged = tempfile::NamedTempFile::new_in(directory)
+        .map_err(|error| format!("Cannot prepare backup in {}: {error}", directory.display()))?;
+    staged
+        .write_all(archive.as_bytes())
+        .and_then(|_| staged.as_file().sync_all())
+        .map_err(|error| format!("Cannot write backup in {}: {error}", directory.display()))?;
+    staged
+        .persist_noclobber(&path)
+        .map_err(|error| format!("Cannot save backup {}: {error}", path.display()))?;
+    Ok(path)
+}
+
 pub fn preview(text: &str, config: &Config) -> Result<Archive, String> {
     if text.len() as u64 > MAX_FILE {
         return Err("Backup is too large".into());

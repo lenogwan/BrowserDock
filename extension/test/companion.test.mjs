@@ -72,7 +72,8 @@ test('disconnect reconnects and stale socket commands cannot act', async () => {
 test('heartbeat sends PING and missing PONG closes stale connection', async () => {
   const f = fixture(); const s = await f.auth(); await f.tick(20000); assert.ok(s.sent.some(x => x.action === 'PING'));
   await f.tick(40000); assert.equal(s.readyState, 1);
-  await f.tick(30000); assert.equal(s.readyState, 3);
+  await f.tick(30000); assert.equal(s.readyState, 1);
+  await f.tick(5000); assert.equal(s.readyState, 3);
 });
 test('pairing change cancels pending query before browser mutation', async () => {
   const f = fixture(); const s = await f.auth(); let finish;
@@ -118,8 +119,11 @@ test('alarm probes a healthy connection and replaces a stale half-open socket', 
   assert.equal(pings(), before + 1);
   f.c.connection.pong = -90001;
   f.api.alarms.onAlarm.emit({ name: 'browserdock-reconnect' });
+  assert.equal(s.readyState, 1, 'stale socket gets a fresh five-second probe');
+  f.c.connection.heartbeatProbe = -5001; // probe timer was suspended
+  f.api.alarms.onAlarm.emit({ name: 'browserdock-reconnect' });
   assert.equal(s.readyState, 3);
-  assert.equal(f.sockets.length, 2, 'alarm reconnects without a background timer');
+  assert.equal(f.sockets.length, 2, 'alarm reconnects an expired probe without another timer');
   await f.tick(3000);
   assert.equal(f.sockets.length, 2);
 });
@@ -146,6 +150,73 @@ test('delayed background heartbeat survives the alarm boundary and resumes norma
   await f.tick(20000);
   assert.equal(s.readyState, 1);
   assert.equal(f.sockets.length, 1);
+});
+test('a delayed healthy heartbeat gets a fresh probe before disconnecting', async () => {
+  const f = fixture(), socket = await f.auth();
+  await f.tick(100000);
+  assert.equal(socket.readyState, 1, 'allow queued replies after scheduling resumes');
+  assert.ok(socket.sent.some(message => message.action === 'PING'));
+  socket.message({ action: 'PONG' });
+  await f.tick(5000);
+  assert.equal(socket.readyState, 1);
+  assert.equal(f.sockets.length, 1);
+  assert.ok(f.c.diagnostics.some(event => event.reason === 'background_delayed' && event.durationMs === 80000));
+});
+test('a pending heartbeat probe is not extended by repeated alarms and is cleared on pairing changes', async () => {
+  const f = fixture(), socket = await f.auth();
+  f.c.connection.pong = -90001;
+  f.api.alarms.onAlarm.emit({ name: 'browserdock-reconnect' });
+  assert.equal(socket.readyState, 1);
+  await f.tick(4000);
+  f.api.alarms.onAlarm.emit({ name: 'browserdock-reconnect' });
+  await f.tick(1000);
+  assert.equal(socket.readyState, 3);
+  await f.tick(3000);
+  const fresh = f.sockets.at(-1); fresh.open(); fresh.message({ type: 'AUTH_OK' });
+  f.c.connection.pong = -90001;
+  f.api.alarms.onAlarm.emit({ name: 'browserdock-reconnect' });
+  f.api.storage.onChanged.emit({ pairing: { newValue: { ...pairing, port: 49301 } } }, 'local');
+  const replacement = f.sockets.at(-1); replacement.open(); replacement.message({ type: 'AUTH_OK' });
+  await f.tick(5000);
+  assert.equal(replacement.readyState, 1, 'old probe cannot close new pairing');
+});
+test('repeated failures back off to 30 seconds and sustained healthy replies reset retries', async () => {
+  const f = fixture(), first = await f.auth(); first.close();
+  let count = 1;
+  for (const delay of [3000, 6000, 12000, 24000, 30000, 30000]) {
+    await f.tick(delay - 1); assert.equal(f.sockets.length, count);
+    await f.tick(1); assert.equal(f.sockets.length, ++count);
+    const socket = f.sockets.at(-1); socket.open(); socket.message({ type: 'AUTH_OK' });
+    if (count < 7) socket.close();
+  }
+  const stable = f.sockets.at(-1);
+  for (let i = 0; i < 3; i++) { await f.tick(20000); stable.message({ action: 'PONG' }); }
+  stable.close(); await f.tick(2999); assert.equal(f.sockets.length, count);
+  await f.tick(1); assert.equal(f.sockets.length, count + 1);
+});
+test('Gecko heartbeats keep the event page active without queueing slow runtime calls', async () => {
+  const f = fixture(); let calls = 0, finish;
+  f.api.runtime.getPlatformInfo = () => { calls++; return new Promise(resolve => { finish = resolve; }); };
+  const socket = await f.auth();
+  for (let i = 0; i < 3; i++) { await f.tick(20000); socket.message({ action: 'PONG' }); }
+  assert.equal(calls, 1, 'at most one unresolved extension API call');
+  finish({ os: 'test', arch: 'test' }); await flush();
+  await f.tick(20000); socket.message({ action: 'PONG' });
+  assert.equal(calls, 2);
+  assert.ok(!JSON.stringify(f.c.diagnostics).includes('arch'));
+  socket.close(); finish({}); await flush(); await f.tick(1000);
+  assert.equal(calls, 2, 'no keepalive when disconnected');
+});
+test('Chromium heartbeat needs no extra lifecycle API and Gecko API failures do not disconnect', async () => {
+  const chrome = fixture(); let calls = 0;
+  chrome.api.storage.local.get = async () => ({ pairing: { ...pairing, browser: 'chrome' } });
+  chrome.api.runtime.getPlatformInfo = async () => { calls++; return {}; };
+  const socket = await chrome.auth(); await chrome.tick(20000); socket.message({ action: 'PONG' });
+  assert.equal(calls, 0);
+  const gecko = fixture(); gecko.api.runtime.getPlatformInfo = async () => { throw Error('unavailable'); };
+  const firefox = await gecko.auth(); await gecko.tick(20000); firefox.message({ action: 'PONG' });
+  await gecko.tick(20000);
+  assert.equal(firefox.readyState, 1);
 });
 test('diagnostics record outage duration, survive background restart and exclude secrets', async () => {
   let saved = {};
@@ -174,6 +245,98 @@ test('diagnostics stay bounded and storage failure cannot block recovery', async
   assert.equal(f.c.diagnostics.length, 50);
   s.close(); await f.tick(3000);
   assert.equal(f.sockets.length, 2);
+});
+test('slow diagnostic history cannot delay pairing or lose current events', async () => {
+  const f = fixture(); let finish;
+  f.api.storage.session = { get: () => new Promise(resolve => { finish = resolve; }), async set() {} };
+  await f.start();
+  assert.equal(f.c.status, 'authenticating');
+  f.c.record('connected');
+  finish({ connectionDiagnostics: [{ at: -10, reason: 'socket_closed' }] });
+  await flush(); await f.c.diagnosticWrites;
+  assert.deepEqual(f.c.diagnostics.map(e => e.reason), ['socket_closed', 'background_start', 'connected']);
+});
+test('hung diagnostic history expires without losing the bounded memory log', async () => {
+  const f = fixture(); let saved;
+  f.api.storage.session = { get: () => new Promise(() => {}), async set(value) { saved = value; } };
+  await f.start(); await f.tick(5000); await f.c.diagnosticWrites;
+  assert.equal(saved.connectionDiagnostics[0].reason, 'background_start');
+});
+test('slow diagnostic writes coalesce bursts into one latest bounded snapshot', async () => {
+  const f = fixture(); const writes = []; let finish;
+  f.api.storage.session = { async get() { return {}; }, set(value) {
+    writes.push(value); return new Promise(resolve => { finish = resolve; });
+  } };
+  await f.start(); await flush();
+  assert.equal(writes.length, 1);
+  for (let i = 0; i < 1000; i++) f.c.record('socket_closed');
+  finish(); await flush();
+  assert.equal(writes.length, 2);
+  assert.equal(writes[1].connectionDiagnostics.length, 50);
+  finish(); await f.c.diagnosticWrites;
+  assert.equal(writes.length, 2);
+});
+test('inventory group lookup scales linearly and keeps group IDs scoped to windows', () => {
+  let reads = 0;
+  const groups = Array.from({ length: 2000 }, (_, id) => ({
+    get id() { reads++; return id; }, windowId: 10, title: `Group ${id}`, color: 'blue'
+  }));
+  const tabs = groups.map((_, id) => tab(id, 'https://example.com/', { groupId: id }));
+  const result = inventory(tabs, false, 2000, groups);
+  assert.equal(result.length, 2000);
+  assert.ok(reads < 20000, `group IDs read ${reads} times`);
+  assert.equal(result[1999].groupTitle, 'Group 1999');
+  assert.equal(inventory([tab(1, 'https://example.com/', { groupId: 0, windowId: 20 })], false, 2000, groups)[0].groupId, undefined);
+});
+test('oversized Unicode titles only iterate the characters that enter inventory', () => {
+  const original = String.prototype[Symbol.iterator]; let read = 0;
+  String.prototype[Symbol.iterator] = function* () {
+    const watched = this.length > 10000;
+    for (const character of original.call(this)) {
+      if (watched && ++read > 320) throw Error('unbounded title iteration');
+      yield character;
+    }
+  };
+  try {
+    const result = inventory([tab(1, 'https://example.com/', { title: '😀'.repeat(10000), groupId: 1 })], false, 2000,
+      [{ id: 1, windowId: 10, title: '😀'.repeat(10000), color: 'blue' }]);
+    assert.equal(result[0].title, '😀'.repeat(256));
+    assert.equal(result[0].groupTitle, '😀'.repeat(64));
+    assert.equal(read, 320);
+  } finally { String.prototype[Symbol.iterator] = original; }
+});
+test('opening a large group indexes existing tabs once instead of rescanning for every URL', async () => {
+  let reads = 0;
+  const tabs = Array.from({ length: 2000 }, (_, id) => ({ ...tab(id, ''),
+    get url() { reads++; return `https://host${id}.example/`; }
+  }));
+  const f = fixture(tabs), socket = await f.auth();
+  socket.message({ id: 'batch', action: 'OPEN_GROUP',
+    urls: Array.from({ length: 50 }, (_, i) => `https://host${1950 + i}.example/`),
+    tab_group: { name: 'Batch', color: '#4285f4', collapsed: false }
+  });
+  await flush();
+  assert.equal(socket.sent.at(-1).result, 'OPENED_GROUP');
+  assert.equal(f.calls.filter(call => call[0] === 'create').length, 0);
+  assert.ok(reads <= 4000, `tab URLs read ${reads} times`);
+  assert.equal(f.calls.find(call => call[0] === 'update')[1], 1950);
+  const before = reads;
+  socket.message({ id: 'small-batch', action: 'OPEN_GROUP', urls: ['https://host0.example/'],
+    tab_group: { name: 'Batch', color: '#4285f4', collapsed: false }
+  });
+  await flush();
+  assert.equal(socket.sent.at(-1).result, 'OPENED_GROUP');
+  assert.equal(reads - before, 1, 'early single matches do not parse the remaining tabs');
+});
+test('obsolete inventory reads skip follow-up group queries and cannot affect a new connection', async () => {
+  const f = fixture(); const old = await f.auth(); let finish; let groupQueries = 0;
+  f.api.tabs.query = () => new Promise(resolve => { finish = resolve; });
+  f.api.tabGroups = { async query() { groupQueries++; return []; } };
+  await f.tick(500);
+  old.close(); await f.tick(3000);
+  finish([]); await flush();
+  assert.equal(groupQueries, 0);
+  assert.equal(old.sent.filter(x => x.action === 'TABS_SYNC').length, 0);
 });
 test('clearing pairing disconnects and prevents alarm reconnects', async () => {
   const f = fixture(); const s = await f.auth();

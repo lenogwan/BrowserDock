@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount } from "svelte";
+  import { Copy } from "lucide-svelte";
   import { buildTree, canNest } from "./trees.js";
   import { entryKey } from "./ids.js";
   import { governedRoutingMatches } from "./groups.js";
@@ -12,6 +13,7 @@
     profiles = [],
     onprofiles,
     onsave,
+    onclone,
     ondelete,
     oncancel,
   }: {
@@ -22,6 +24,7 @@
     profiles?: string[];
     onprofiles: (browserId:string) => Promise<string[]>;
     onsave: (bookmark: Bookmark) => Promise<void>;
+    onclone: (bookmark: Bookmark) => void;
     ondelete: () => Promise<void>;
     oncancel: () => void;
   } = $props();
@@ -42,6 +45,7 @@
   const tree = $derived(buildTree(bookmarks));
   const selectedParent = $derived(parents.find(parent=>parent.id===parentId));
   const descendantCount = $derived(tree.index.get(entryKey(bookmark))?.count ?? 0);
+  const existing = $derived(bookmarks.some(item => item.id === bookmark.id));
   function parentLabel(parent: Bookmark) {
     const node = tree.index.get(entryKey(parent));
     return node?.parent ? `${node.parent.item.title} / ${parent.title}` : parent.title;
@@ -80,7 +84,7 @@
   let hints = $state<string[]>([]);
   $effect(()=>{const id=target;hints=[];onprofiles(id).then(values=>{if(target===id)hints=values}).catch(()=>{});});
   let titleInput = $state<HTMLInputElement>();
-  onMount(() => titleInput?.focus());
+  onMount(() => { titleInput?.focus(); if (!existing && title) titleInput?.select(); });
   let busy = $state(false);
   let error = $state("");
   let confirmDelete = $state(false);
@@ -119,6 +123,11 @@
     followParent();
     await persist();
   }
+  function clone() {
+    if (busy) return;
+    error = "";
+    try { onclone(value()); } catch (cause) { error = String(cause); }
+  }
 </script>
 
 <form onsubmit={save} class="editor">
@@ -126,7 +135,11 @@
   <span class="eyebrow"
     >{bookmark.private ? "PRIVATE BOOKMARK" : "BOOKMARK"}</span
   >
-  <h1>{bookmark.title ? "Edit bookmark" : "New bookmark"}</h1>
+  <div class="editor-heading">
+    <h1>{existing ? "Edit bookmark" : "New bookmark"}</h1>
+    {#if existing}<button class="clone" type="button" title="Copy these details into a new bookmark" onclick={clone} disabled={busy}><Copy size={13} aria-hidden="true" />Clone bookmark</button>{/if}
+  </div>
+  {#if !existing && bookmark.title}<p class="muted copy-hint">Copy ready. Adjust the details and save.</p>{/if}
   <label>Title<input bind:this={titleInput} bind:value={title} required maxlength="512" /></label>
   <label
     >URL<input
@@ -176,7 +189,7 @@
     >
   </div>
   {#if confirmDelete}<p class="muted" role="status">Delete this bookmark? You can undo it from the bookmark list.</p><button class="secondary" type="button" onclick={() => confirmDelete = false}>Keep bookmark</button>{/if}
-  {#if bookmark.title}<button
+  {#if existing}<button
       class="delete"
       type="button"
       disabled={busy}
@@ -199,6 +212,10 @@
 </form>
 
 <style>
+  .editor-heading {display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:8px;}
+  .clone {display:flex;align-items:center;gap:6px;min-height:32px;padding:6px 9px;border:1px solid var(--accent-alpha-33);border-radius:7px;background:var(--accent-alpha-12);color:var(--text);font-size:11px;}
+  .clone:hover {background:var(--accent-alpha-33);}
+  .copy-hint {margin:0;}
   p.muted { font-size: 10px; line-height: 1.5; }
   .routing-heading { display:flex; align-items:center; justify-content:space-between; font-size:11px; font-weight:600; }
   .custom-badge { padding:2px 6px; border:1px solid color-mix(in srgb, var(--accent) 55%, transparent); border-radius:999px; color:var(--accent); font:9px "Cascadia Code", Consolas, monospace; letter-spacing:.6px; text-transform:uppercase; }

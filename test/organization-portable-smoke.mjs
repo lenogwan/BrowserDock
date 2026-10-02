@@ -44,7 +44,11 @@ await page.addInitScript(() => {
           if (!args.preview) publicItems.push({ ...make('Imported'), title: args.items[0].title, url: args.items[0].url });
           return { added: 1, duplicates: 1, groups_added: 1 };
         }
-        case 'backup_export': return JSON.stringify({ format: 'BrowserDock library', version: 1, bookmarks: publicItems, groups, vault_hex: 'ab'.repeat(44) });
+        case 'backup_save':
+          if (window.testState.failBackup) throw Error('Cannot write backup: disk full');
+          if (window.testState.holdBackup) await new Promise(resolve => window.testState.finishBackup = resolve);
+          return 'C:\\Users\\Test\\Downloads\\browserdock-library-test.json';
+        case 'plugin:opener|reveal_item_in_dir': if (window.testState.failReveal) throw Error('Explorer unavailable'); return;
         case 'backup_preview': { const data = JSON.parse(args.text); return { bookmarks: data.bookmarks.length, groups: data.groups.length, has_vault: !!data.vault_hex }; }
         case 'backup_restore': vault.locked = true; history.private = null; window.emitTest('vault-locked'); return 'C:\\BrowserDock\\restore-backup-test';
         default: return;
@@ -104,9 +108,27 @@ try {
   assert.equal(imported.args.items[0].folder, 'Work');
   await page.getByRole('button', { name: 'Import bookmarks', exact: true }).click();
   await page.getByText('Imported 1 bookmark; skipped 1 duplicate.', { exact: true }).waitFor();
-  const downloadWait = page.waitForEvent('download');
-  await page.getByRole('button', { name: 'Download library backup', exact: true }).click();
-  assert.match((await downloadWait).suggestedFilename(), /^browserdock-library-.*\.json$/);
+  await page.evaluate(() => window.testState.failBackup = true);
+  await page.getByRole('button', { name: 'Save library backup', exact: true }).click();
+  await page.getByRole('alert').filter({ hasText: 'Cannot write backup: disk full' }).waitFor();
+  assert.equal(await page.getByRole('status').filter({ hasText: 'Backup saved' }).count(), 0);
+  assert.equal(await page.getByRole('button', { name: 'Show in folder', exact: true }).count(), 0);
+  await page.evaluate(() => { window.testState.failBackup = false; window.testState.holdBackup = true; });
+  await page.getByRole('button', { name: 'Save library backup', exact: true }).click();
+  await page.waitForFunction(() => window.testState.finishBackup);
+  assert.equal(await page.getByRole('status').filter({ hasText: 'Backup saved' }).count(), 0, 'save has not completed');
+  assert.equal(await page.getByRole('button', { name: 'Saving backup…', exact: true }).isDisabled(), true);
+  await page.evaluate(() => { window.testState.finishBackup(); window.testState.holdBackup = false; });
+  await page.getByRole('status').filter({ hasText: 'Backup saved to C:' }).waitFor();
+  const savedPath = 'C:\\Users\\Test\\Downloads\\browserdock-library-test.json';
+  assert.ok((await page.getByRole('status').filter({ hasText: 'Backup saved' }).innerText()).includes(savedPath));
+  await page.getByRole('button', { name: 'Show in folder', exact: true }).click();
+  assert.deepEqual(await page.evaluate(() => window.testState.calls.find(c => c.cmd === 'plugin:opener|reveal_item_in_dir').args.paths), [savedPath]);
+  await page.evaluate(() => window.testState.failReveal = true);
+  await page.getByRole('button', { name: 'Show in folder', exact: true }).click();
+  await page.getByRole('alert').filter({ hasText: 'Your backup is saved at' }).waitFor();
+  assert.ok((await page.getByRole('alert').innerText()).includes(savedPath));
+  await page.evaluate(() => window.testState.failReveal = false);
   const archive = { format: 'BrowserDock library', version: 1, bookmarks: [], groups: [], vault_hex: 'ab'.repeat(44) };
   await page.getByLabel('Restore backup', { exact: true }).setInputFiles({ name: 'backup.json', mimeType: 'application/json', buffer: Buffer.from(JSON.stringify(archive)) });
   await page.getByLabel('Also replace the encrypted vault').waitFor();

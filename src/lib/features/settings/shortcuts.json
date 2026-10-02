@@ -1,0 +1,16 @@
+[
+  {"id":"next_result","label":"Next bookmark","description":"Select the next visible bookmark or URL.","group":"navigation","binding":"ArrowDown"},
+  {"id":"previous_result","label":"Previous bookmark","description":"Select the previous visible bookmark or URL.","group":"navigation","binding":"ArrowUp"},
+  {"id":"open_selected","label":"Open selected bookmark","description":"Open or switch to the selected bookmark or typed URL. In selection mode, toggle the bookmark.","group":"navigation","binding":"Enter"},
+  {"id":"open_subtree","label":"Open subtree / new tab","description":"Open a parent and its sub-pages. For a single bookmark or URL, open a new tab.","group":"bookmarks","binding":"Shift+Enter"},
+  {"id":"new_tab","label":"Always open a new tab","description":"Open only the selected bookmark or URL in a new tab, including when it has sub-pages.","group":"bookmarks","binding":"Ctrl+Enter"},
+  {"id":"expand_branch","label":"Expand sub-pages","description":"Expand the selected parent when viewing the grouped list.","group":"bookmarks","binding":"ArrowRight"},
+  {"id":"collapse_branch","label":"Collapse sub-pages","description":"Collapse the selected parent when viewing the grouped list.","group":"bookmarks","binding":"ArrowLeft"},
+  {"id":"collapse_all","label":"Collapse all","description":"Clear search and collapse every group and sub-page in this view.","group":"bookmarks","binding":"Ctrl+Shift+K"},
+  {"id":"collapse_dock","label":"Collapse dock","description":"Return to the compact search bar. Unsaved settings require confirmation.","group":"navigation","binding":"Ctrl+Shift+D"},
+  {"id":"hide","label":"Hide dock","description":"Hide the window and clear private presentation. Escape remains available for hide and panic lock.","group":"navigation","binding":"Escape"},
+  {"id":"route_firefox","label":"Use Firefox","description":"Toggle the browser override for the next open.","group":"browsers","binding":"Alt+F"},
+  {"id":"route_mullvad","label":"Use Mullvad","description":"Toggle the browser override for the next open.","group":"browsers","binding":"Alt+M"},
+  {"id":"route_chrome","label":"Use Chrome","description":"Toggle the browser override for the next open.","group":"browsers","binding":"Alt+C"},
+  {"id":"route_edge","label":"Use Edge","description":"Toggle the browser override for the next open.","group":"browsers","binding":"Alt+E"}
+]

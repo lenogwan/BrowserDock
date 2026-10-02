@@ -1,5 +1,7 @@
 import type { Settings, ThemeId, WindowSize } from '../../shared/types';
 import { normalizeTheme } from './themes';
+import { normalizeDockShortcuts } from './shortcuts.js';
+import type { ActiveShortcuts } from '../../platform/tauri/commands';
 
 export class SettingsController {
   settings = $state<Settings>({
@@ -7,18 +9,22 @@ export class SettingsController {
     always_on_top: true, auto_hide: false, hide_on_open: true,
     auto_tab_groups: true, opacity: 1, vault_timeout_minutes: 5,
     global_shortcut: 'Ctrl+Shift+Space', panic_shortcut: 'Ctrl+Alt+L',
+    dock_shortcuts: normalizeDockShortcuts(null),
   });
   previewTheme = $state<ThemeId | null>(null);
+  activeWindowsShortcuts = $state<string[]>(['Ctrl+Shift+Space', 'Ctrl+Alt+L']);
   opacityPreview = $state<number | null>(null);
   dirty = $state(false);
   discardRequest = $state(0);
   confirmBack = $state(false);
   private backTimer: ReturnType<typeof setTimeout> | undefined;
 
-  load(value: Settings) {
+  load(value: Settings, active?: ActiveShortcuts) {
+    this.activeWindowsShortcuts = (active ?? [value.global_shortcut, value.panic_shortcut]).filter((binding): binding is string => typeof binding === 'string');
     this.settings = {
       ...value,
       theme: normalizeTheme(value.theme),
+      dock_shortcuts: normalizeDockShortcuts(value.dock_shortcuts),
       auto_tab_groups: value.auto_tab_groups ?? true,
       window_size: value.window_size ?? { width: 400, height: null },
       hide_on_open: value.hide_on_open ?? true,
@@ -26,7 +32,8 @@ export class SettingsController {
     };
   }
 
-  commit(value: Settings) {
+  commit(value: Settings, active?: ActiveShortcuts) {
+    this.activeWindowsShortcuts = (active ?? [value.global_shortcut, value.panic_shortcut]).filter((binding): binding is string => typeof binding === 'string');
     this.settings = value;
     this.previewTheme = null;
     this.opacityPreview = null;

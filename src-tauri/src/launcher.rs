@@ -6,6 +6,7 @@ pub mod organization_history;
 pub mod portable;
 pub mod options;
 pub mod groups;
+pub mod shortcut_bindings;
 pub mod pairing;
 pub mod settings;
 pub mod window_size;

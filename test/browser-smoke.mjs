@@ -215,8 +215,8 @@ try {
   // Exercise accessible controls in the rendered UI, including the narrow dock.
   assert.equal(await page.getByRole('button',{name:'Settings',exact:true}).getAttribute('aria-label'),'Settings');
   assert.equal(await page.getByRole('button',{name:'Edit GitHub',exact:true}).getAttribute('aria-label'),'Edit GitHub');
-  await page.getByText('Esc hide',{exact:false}).waitFor();
-  await page.getByText('new tab',{exact:false}).waitFor();
+  assert.equal(await page.locator('.keyboard-hints').count(), 0);
+  assert.equal(await page.locator('footer kbd').count(), 0);
   await page.getByText('1 companion connected', {exact:true}).waitFor();
   await page.getByRole('button', {name:'Open GitHub in firefox', exact:true}).focus();
   await page.locator('#enter-preview').filter({hasText:'Switch to existing Firefox tab'}).waitFor();

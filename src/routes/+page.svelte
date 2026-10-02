@@ -18,6 +18,8 @@
     ChevronUp,
     ArrowUpRight,
     ChevronLeft,
+    ListChecks,
+    Undo2,
   } from "lucide-svelte";
   import SearchBar from "$lib/features/bookmarks/SearchBar.svelte";
   import BrowserBadge from "$lib/features/browsers/BrowserBadge.svelte";
@@ -36,7 +38,8 @@
   import { groupSections } from "$lib/features/bookmarks/groups.js";
   import { entryKey } from "$lib/features/bookmarks/ids.js";
   import BookmarkEditor from "$lib/features/bookmarks/BookmarkEditor.svelte";
-  import { searchBookmarks, directUrl, shortcutBrowser, buildOpenTabIndex, isTabOpen, rankResults } from "$lib/features/bookmarks/search.js";
+  import { searchBookmarks, directUrl, buildOpenTabIndex, isTabOpen, rankResults } from "$lib/features/bookmarks/search.js";
+  import { normalizeDockShortcuts, dockShortcutAction, shortcutFromEvent, canonicalShortcut } from '$lib/features/settings/shortcuts.js';
   import type {
     Group,
     WindowSize,
@@ -62,6 +65,7 @@
     { id: "edge", name: "Edge", color: "#83d6df", exe_path: "" },
   ]);
   const settingsController = new SettingsController();
+  const dockShortcuts = $derived(normalizeDockShortcuts(settingsController.settings.dock_shortcuts));
   const vaultController = new VaultController();
   const bookmarkContext: BookmarkContext = {
     get generation() { return vaultController.generation; },
@@ -268,7 +272,7 @@
       bookmarkController.bookmarks = data.bookmarks;
       bookmarkController.groups = data.groups ?? [];
       browsers = data.browsers;
-      settingsController.load(data.settings);
+      settingsController.load(data.settings, data.active_shortcuts);
       if (data.warnings?.length) error = data.warnings.join(" ");
     } catch (e) {
       if (propagate) throw e;
@@ -319,8 +323,8 @@
     clearPrivate();
     if (windowController.native) await vaultController.lock();
   }
-  async function open(bookmark?: Bookmark, force = false) {
-    if (force && bookmark && (allTree.index.get(entryKey(bookmark))?.count ?? 0) > 0) { await openSubtree(bookmark); return; }
+  async function open(bookmark?: Bookmark, force = false, single = false) {
+    if (force && !single && bookmark && (allTree.index.get(entryKey(bookmark))?.count ?? 0) > 0) { await openSubtree(bookmark); return; }
     if (busy) return;
     if (!windowController.native) {
       error = "Open the desktop app to launch a browser.";
@@ -455,75 +459,108 @@
       busy = false;
     }
   }
-  async function keydown(e: KeyboardEvent) {
-    activity();
-    if (e.key === "Escape") {
-      e.preventDefault();
-      // Hide natively without unmounting an active Library operation. Sending
-      // dock_escape also preserves the backend's double-Escape panic lock.
-      if (libraryBusy) {
-        clearPrivate(false);
-        windowController.dockVisible = false;
-        if (windowController.native) {
-          try { await invokeCommand("dock_escape"); }
-          catch (cause) { windowController.dockVisible = true; error = String(cause); }
-        }
-        return;
-      }
-      if (!requestLeave()) return;
+  async function hideDock(escape: boolean) {
+    const command = escape ? 'dock_escape' : 'dock_hide';
+    // Hide natively without unmounting an active Library operation. Sending
+    // dock_escape also preserves the backend's double-Escape panic lock.
+    if (libraryBusy) {
       clearPrivate(false);
-      view = "search";
-      openOnly = false;
-      windowController.expanded = false;
-      windowController.strip = false;
       windowController.dockVisible = false;
       if (windowController.native) {
-        try { await invokeCommand("dock_escape"); }
-        catch (e) { windowController.dockVisible = true; windowController.expanded = true; error = String(e); }
+        try { await invokeCommand(command); }
+        catch (cause) { windowController.dockVisible = true; error = String(cause); }
       }
       return;
     }
-    if (e.altKey) {
-      const id = shortcutBrowser(e.key);
-      if (id) {
-        e.preventDefault();
-        override = override === id ? null : id;
-        return;
-      }
+    if (!requestLeave()) return;
+    clearPrivate(false);
+    view = "search";
+    openOnly = false;
+    windowController.expanded = false;
+    windowController.strip = false;
+    windowController.dockVisible = false;
+    if (windowController.native) {
+      try { await invokeCommand(command); }
+      catch (e) { windowController.dockVisible = true; windowController.expanded = true; error = String(e); }
     }
+  }
+  function collapseDock() {
+    if (!requestLeave()) return;
+    bookmarkController.editing = null;
+    bookmarkController.editingGroup = null;
+    windowController.expanded = false;
+    query = '';
+    input?.blur();
+  }
+  async function keydown(e: KeyboardEvent) {
+    if (e.defaultPrevented) return;
+    activity();
+    const combo = shortcutFromEvent(e);
+    const logicalCombo = shortcutFromEvent(e, false);
+    if (settingsController.activeWindowsShortcuts.some(binding => {
+      const active = canonicalShortcut(binding);
+      return active !== null && (active === combo || active === logicalCombo);
+    })) return;
+    const action = dockShortcutAction(e, dockShortcuts);
+    if (!action) return;
+    // Holding a launch/hide key must not dispatch again after an earlier reply.
+    if (e.repeat && !['next_result', 'previous_result'].includes(action)) { e.preventDefault(); return; }
+    if (action === 'hide') { e.preventDefault(); await hideDock(combo === 'Escape'); return; }
+    if (action === 'collapse_dock') { e.preventDefault(); collapseDock(); return; }
     if (bookmarkController.editing || bookmarkController.editingGroup || view === "settings" || (view === "vault" && vaultController.status.locked))
       return;
     const target = e.target as HTMLElement;
     if (target !== input && target?.closest?.('input, select, button') && !target.closest('.row-open, .tree-chevron')) return;
-    if (!query.trim() && (e.key === "ArrowRight" || e.key === "ArrowLeft")) {
+    if (action.startsWith('route_')) {
+      e.preventDefault();
+      const id = action.slice('route_'.length);
+      override = override === id ? null : id;
+      return;
+    }
+    if (action === 'collapse_all') {
+      e.preventDefault();
+      if (bookmarkController.moving || busy) return;
+      const current = vaultController.generation;
+      query = ''; moveGroup = ''; selected = 0; navTick++;
+      error = ''; notice = '';
+      try {
+        await bookmarkController.collapseAll(view === 'vault' ? [true] : vaultController.status.locked ? [false] : [false, true], bookmarkContext);
+        if (current === vaultController.generation) notice = 'All groups and sub-pages collapsed.';
+      } catch (cause) { if (current === vaultController.generation) error = String(cause); }
+      return;
+    }
+    if (!query.trim() && (action === 'expand_branch' || action === 'collapse_branch')) {
       const rowKey = (e.target as HTMLElement)?.closest?.('[data-vkey]')?.getAttribute('data-vkey');
       const item = rowKey ? allTree.index.get(rowKey)?.item : keyboardResults[selected - (url ? 1 : 0)];
       if(item && (allTree.index.get(entryKey(item))?.count ?? 0)>0) {
-        e.preventDefault(); toggleTree(item,e.key === "ArrowRight"); return;
+        e.preventDefault(); toggleTree(item, action === 'expand_branch'); return;
       }
     }
-    if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+    if (action === 'next_result' || action === 'previous_result') {
       e.preventDefault();
       windowController.expanded = true;
       const length = keyboardResults.length + (url ? 1 : 0);
       selected = length
-        ? (selected + (e.key === "ArrowDown" ? 1 : -1) + length) % length
+        ? (selected + (action === 'next_result' ? 1 : -1) + length) % length
         : 0;
       // The virtualized list scrolls to the selection itself; the legacy
       // querySelector scrollIntoView cannot reach unmounted rows and would
       // fight the virtualizer's own scroll math.
       navTick++;
     }
-    if (e.key === "Enter" && (e.target === input || (e.target as HTMLElement)?.closest?.('.row-open'))) {
+    if (['open_selected', 'open_subtree', 'new_tab'].includes(action) && (e.target === input || target?.closest?.('.row-open'))) {
+      const rowKey = target?.closest?.('[data-vkey]')?.getAttribute('data-vkey');
+      const bookmark = rowKey ? allTree.index.get(rowKey)?.item : url && selected === 0 ? undefined : keyboardResults[selected - (url ? 1 : 0)];
+      e.preventDefault();
       if (bookmarkController.selecting) {
-        if (e.target === input) e.preventDefault();
+        if (action === 'open_selected' && bookmark) {
+          if (bookmarkController.selectionPrivate !== !!bookmark.private) moveGroup = '';
+          bookmarkController.toggleSelection(bookmark);
+        }
         return;
       }
-      e.preventDefault();
-      await open(
-        url && selected === 0 ? undefined : keyboardResults[selected - (url ? 1 : 0)],
-        e.shiftKey,
-      );
+      if (action === 'new_tab') await open(bookmark, true, true);
+      else await open(bookmark, action === 'open_subtree');
     }
   }
   function add() {
@@ -533,6 +570,11 @@
   async function saveBookmark(bookmark: Bookmark) {
     if (!windowController.native) throw "Open the desktop app to save bookmarks.";
     await bookmarkController.saveBookmark(bookmark, bookmarkContext);
+  }
+  function cloneBookmark(bookmark: Bookmark) {
+    if (bookmarkController.editing?.id !== bookmark.id) return;
+    if (bookmark.private && vaultController.status.locked) throw "Vault is locked.";
+    bookmarkController.cloneBookmark(bookmark, bookmark.private ? vaultController.bookmarks : bookmarkController.bookmarks);
   }
   async function undoOrganization(privateScope: boolean) {
     const current = vaultController.generation;
@@ -571,7 +613,7 @@
     await windowController.size.flush();
     // Empty notice means everything — shortcuts included — is live already.
     const outcome = await invokeCommand("save_settings", { settings: value });
-    settingsController.commit(value);
+    settingsController.commit(value, outcome?.active_shortcuts);
     if (value.auto_hide) await invokeCommand("dock_save_position", { snap: true });
     return outcome;
   }
@@ -851,12 +893,7 @@
               title="Collapse dock"
               aria-label="Collapse dock"
               disabled={libraryBusy}
-              onclick={() => {
-                bookmarkController.editing = null;
-                bookmarkController.editingGroup = null;
-                windowController.expanded = false;
-                query = "";
-              }}><ChevronUp size={14} /></button
+              onclick={collapseDock}><ChevronUp size={14} /></button
             >
           </div>
         </nav>
@@ -874,6 +911,7 @@
                 onprofiles={(browserId)=>windowController.native?invokeCommand("browser_profiles",{browserId}):Promise.resolve([])}
                 {browsers}
                 onsave={saveBookmark}
+                onclone={cloneBookmark}
                 ondelete={deleteBookmark}
                 oncancel={() => (bookmarkController.editing = null)}
               />{/key}
@@ -905,17 +943,13 @@
               onsubmit={authenticate}
             />
           {:else}
-            {#if previewUrl}<div class="launch-preview" id="enter-preview" role="status" title={enterPreview?.note ?? 'The destination is resolved using the same settings as launch.'}>
-              <kbd>Enter</kbd><span>{!windowController.native ? 'Open the desktop app to launch' : enterPreview?.text ?? (routeFailed === previewKey ? 'Destination preview unavailable' : 'Checking destination…')}</span>
-            </div>{/if}
-            <div class="section-caption">
-              <span
-                >{query
-                  ? "MATCHING PLACES"
-                  : view === "vault"
-                    ? "ONLY FOR YOU"
-                    : "YOUR EVERYDAY PLACES"}</span
-              ><span class="caption-right"><button
+            <div class="bookmark-toolbar" role="group" aria-label="Bookmark tools">
+              <div class="toolbar-actions">
+                <button class="toolbar-button" class:on={bookmarkController.selecting} aria-pressed={bookmarkController.selecting} aria-label={bookmarkController.selecting ? 'Cancel selection' : 'Select bookmarks'} title={bookmarkController.selecting ? 'Cancel selection' : 'Select bookmarks to move'} disabled={bookmarkController.moving} onclick={() => { moveGroup = ''; if (bookmarkController.selecting) bookmarkController.cancelSelection(); else { bookmarkController.selectionPrivate = view === 'vault'; bookmarkController.selecting = true; } }}><ListChecks size={14} aria-hidden="true" />{bookmarkController.selecting ? 'Cancel' : 'Select'}</button>
+                {#if bookmarkController.publicUndo && view !== 'vault'}<button class="toolbar-button undo-button" aria-label="Undo public action" title="Undo last public move or deletion" disabled={bookmarkController.moving} onclick={() => undoOrganization(false)}><Undo2 size={14} aria-hidden="true" /></button>{/if}
+                {#if bookmarkController.privateUndo}<button class="toolbar-button undo-button" aria-label="Undo private action" title="Undo last private move or deletion" disabled={bookmarkController.moving} onclick={() => undoOrganization(true)}><Undo2 size={14} aria-hidden="true" /><LockKeyhole size={10} aria-hidden="true" /></button>{/if}
+              </div>
+              <span class="toolbar-results"><button
                   class="open-filter"
                   class:on={openOnly}
                   title="Show only open tabs (or type /open)"
@@ -923,7 +957,7 @@
                   aria-label="Show only open tabs"
                   onclick={() => (openOnly = !openOnly)}
                   ><span class="open-filter-dot" aria-hidden="true"></span>Open</button
-                ><span class="result-count">{results.length}</span></span
+                ><span class="result-count">{results.length}<span class="sr-only"> bookmarks</span></span></span
               >
             </div>
             {#if url && !bookmarkController.selecting}<button
@@ -935,11 +969,7 @@
                   ><strong>Open URL</strong><small>{url}</small></span
                 ><span class="route-name" title={selected === 0 ? route : 'Select this URL to preview its destination'}>{selected === 0 ? route : 'URL routing'}</span></button
               >{/if}
-            <div class="organization-actions">
-              <button class="secondary" disabled={bookmarkController.moving} onclick={() => { moveGroup = ''; if (bookmarkController.selecting) bookmarkController.cancelSelection(); else { bookmarkController.selectionPrivate = view === 'vault'; bookmarkController.selecting = true; } }}>{bookmarkController.selecting ? 'Cancel selection' : 'Select bookmarks'}</button>
-              {#if bookmarkController.publicUndo && view !== 'vault'}<button class="secondary" disabled={bookmarkController.moving} onclick={() => undoOrganization(false)}>Undo public action</button>{/if}
-              {#if bookmarkController.privateUndo}<button class="secondary" disabled={bookmarkController.moving} onclick={() => undoOrganization(true)}>Undo private action</button>{/if}
-              {#if bookmarkController.selecting}
+            {#if bookmarkController.selecting}<div class="organization-actions">
                 <small class="selection-count" role="status">{bookmarkController.selectedIds.length} selected · {bookmarkController.selectionPrivate ? 'Private' : 'Public'}{selectionCount > bookmarkController.selectedIds.length ? ` · ${selectionCount} including sub-pages` : ''}</small>
                 <label class="selection-destination">Move to group<select aria-label="Move selected bookmarks to group" bind:value={moveGroup} disabled={bookmarkController.moving}>
                   <option value="">Ungrouped</option>
@@ -947,8 +977,7 @@
                 </select></label>
                 <button class="primary" disabled={!bookmarkController.selectedIds.length || bookmarkController.moving} onclick={moveSelection}>{bookmarkController.moving ? 'Moving…' : 'Move selected'}</button>
                 <small class="selection-help">Click a row or checkbox to select. Sub-pages move with their parent. Selecting a private bookmark clears a public selection, and vice versa.</small>
-              {/if}
-            </div>
+            </div>{/if}
             <BookmarkList
               selecting={bookmarkController.selecting}
               selectedIds={bookmarkController.selectedIds}
@@ -1020,13 +1049,9 @@
             {#if override}<button class="override-clear" title="Clear browser override" aria-label="Clear browser override"
               onclick={() => (override = null)}>{override}<X size={10} aria-hidden="true" /></button>{/if}
           </div>
-          <div class="keyboard-hints" aria-label="Keyboard shortcuts">
-            {#if libraryBusy}<span>Library operation in progress</span><span><kbd>Esc</kbd> hide</span>
-            {:else if view === 'settings' || bookmarkController.editing || bookmarkController.editingGroup || (view === 'vault' && vaultController.status.locked)}<span><kbd>Tab</kbd> next control</span><span><kbd>Esc</kbd> hide</span>
-            {:else if bookmarkController.selecting}<span><kbd>Tab</kbd> next bookmark</span><span><kbd>Space</kbd> select</span><span><kbd>Esc</kbd> hide</span>
-            {:else}<span><kbd>↑↓</kbd> select</span><span><kbd>Enter</kbd> open</span>
-            <span><kbd>Shift+↵</kbd> subtree / new tab</span><span><kbd>Esc</kbd> hide</span>{/if}
-          </div>
+            {#if previewUrl}<div class="launch-preview" id="enter-preview" role="status" title={`${enterPreview?.text ?? 'Checking destination…'}. ${enterPreview?.note ?? 'The destination is resolved using the same settings as launch.'}`}>
+              <ArrowUpRight size={12} aria-hidden="true" /><span>{!windowController.native ? 'Open the desktop app to launch' : enterPreview?.text ?? (routeFailed === previewKey ? 'Destination preview unavailable' : 'Checking destination…')}</span>
+            </div>{/if}
         </footer>
       </div>
     {/if}
@@ -1035,15 +1060,21 @@
 </main>
 
 <style>
+  .bookmark-toolbar {display:flex;align-items:center;justify-content:space-between;gap:6px;min-height:38px;padding:3px 4px;}
+  .toolbar-actions,.toolbar-results {display:flex;align-items:center;gap:4px;}
+  .toolbar-button {display:flex;align-items:center;justify-content:center;gap:5px;min-height:30px;padding:5px 7px;border:1px solid transparent;border-radius:6px;background:transparent;color:var(--muted);font-size:11px;}
+  .toolbar-button:hover {color:var(--text);background:var(--accent-alpha-12);}
+  .toolbar-button.on {color:var(--accent);border-color:var(--accent-alpha-33);background:var(--accent-alpha-12);}
+  .undo-button {color:var(--accent);}
   .organization-actions {display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin:6px 0;}
   .organization-actions small {color:var(--muted);font-size:10px;}
   .organization-actions button {font-size:11px;padding:7px 9px;min-height:32px;}
   .organization-actions .selection-destination {flex:1;min-width:120px;gap:4px;font-size:10px;}
   .organization-actions select {font-size:11px;padding:7px;min-height:32px;}
   .selection-count,.selection-help {width:100%;line-height:1.5;}
-  .launch-preview {display:flex;gap:8px;align-items:baseline;padding:8px 10px;color:var(--muted);font-size:11px;border-bottom:1px solid var(--accent-alpha-12);}
-  .launch-preview span {min-width:0;overflow-wrap:anywhere;}
-  .launch-preview kbd {flex-shrink:0;color:var(--text);}
+  .launch-preview {display:flex;gap:6px;align-items:center;min-width:0;color:var(--muted);font-size:10px;}
+  .launch-preview span {min-width:0;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;}
+  .launch-preview :global(svg) {flex-shrink:0;}
   main {
     position:relative;
     width: 100%;
@@ -1155,29 +1186,17 @@
     flex: 1;
     min-height: 0;
   }
-  .section-caption {
-    display: flex;
-    justify-content: space-between;
-    padding: 9px 8px 5px;
-    font:
-      9px "Cascadia Code",
-      Consolas,
-      monospace;
-    letter-spacing: 1.3px;
-    color: var(--muted);
-  }
-  .caption-right { display: flex; align-items: center; gap: 10px; }
   .open-filter {
     display: flex; align-items: center; gap: 5px;
     background: none; border: 1px solid transparent; border-radius: 5px;
     color: var(--muted); font: inherit; letter-spacing: inherit;
-    padding: 2px 6px; cursor: pointer;
+    min-height:30px;padding: 5px 6px; cursor: pointer;font-size:11px;
   }
   .open-filter:hover { color: var(--text); border-color: #ffffff14; }
   .open-filter-dot { width: 5px; height: 5px; border-radius: 50%; background: #62696d; }
   .open-filter.on { color: var(--accent); border-color: var(--accent-alpha-33); background: var(--accent-alpha-12); font-weight: 600; }
   .open-filter.on .open-filter-dot { background: var(--accent); }
-  .result-count { font-variant-numeric: tabular-nums; }
+  .result-count {font-size:10px;min-width:20px;text-align:center;font-variant-numeric:tabular-nums;}
   footer {
     flex-shrink: 0;
     border-top: 1px solid #ffffff0a;
@@ -1193,15 +1212,11 @@
   .connection-status.disconnected {color:#c9bc97}
   .connection-dot {width:6px;height:6px;flex-shrink:0;border-radius:50%;background:#c9bc97}
   .connection-dot.connected {background:var(--accent)}
-  .keyboard-hints {display:flex;flex-wrap:wrap;gap:5px 12px;font-size:9px}
-  .keyboard-hints > span {white-space:nowrap}
-  kbd {font:9px "Cascadia Code",Consolas,monospace;color:#c9cfcc}
   .override-clear {display:flex;align-items:center;gap:5px;background:var(--accent-alpha-12);border:1px solid var(--accent-alpha-33);border-radius:5px;color:var(--accent);font-size:9px;padding:3px 5px}
   @media (max-width: 340px) {
     nav {padding:0 8px}
     .tabs {gap:10px}
     .nav-actions {gap:0}
-    .keyboard-hints {gap:5px 8px}
   }
   .url-result {
     display: flex;

@@ -134,26 +134,8 @@ pub fn initialize(app: &tauri::AppHandle) -> Result<(), Box<dyn std::error::Erro
             .map_err(|_| "Configuration unavailable")?;
         Settings::from_config(&c)
     };
-    let summon_result =
-        app.global_shortcut()
-            .on_shortcut(settings.global_shortcut.as_str(), |app, _, event| {
-                if event.state == ShortcutState::Pressed {
-                    summon(app, false);
-                }
-            });
-    let panic_result =
-        app.global_shortcut()
-            .on_shortcut(settings.panic_shortcut.as_str(), |app, _, event| {
-                if event.state == ShortcutState::Pressed {
-                    let _ = dock_hide(app.clone());
-                    runtime::lock(app);
-                }
-            });
-    for (label, result) in [("Summon", summon_result), ("Panic lock", panic_result)] {
-        if result.is_err() {
-            app.state::<DesktopState>().startup_errors.lock().map_err(|_|"Status unavailable")?.push(format!("{label} shortcut is unavailable. Choose another in Settings and restart; tray controls remain available."));
-        }
-    }
+    let shortcut_notice = runtime::activate_shortcuts(app, &settings);
+    if !shortcut_notice.is_empty() { record(shortcut_notice); }
     // Escape is temporarily global after the first press, catching the second
     // press even after the webview loses focus. Never retain the registration.
     use tauri::menu::{Menu, MenuItem};

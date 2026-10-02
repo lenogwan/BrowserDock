@@ -1,7 +1,8 @@
 import { invoke as tauriInvoke } from '@tauri-apps/api/core';
 import type { Bookmark, Browser, Group, InstanceDigest, Settings, VaultStatus, WindowSize } from '../../shared/types';
 
-export type DockData = { bookmarks: Bookmark[]; groups?: Group[]; browsers: Browser[]; settings: Settings; warnings: string[] };
+export type ActiveShortcuts = [string | null, string | null];
+export type DockData = { bookmarks: Bookmark[]; groups?: Group[]; browsers: Browser[]; settings: Settings; warnings: string[]; active_shortcuts?: ActiveShortcuts };
 export type CompanionDigest = { instances: InstanceDigest[]; error: string | null };
 export type GroupActionResult = { processed: number; note?: string };
 export type RouteDetails = { browser_id: string; profile?: string | null; container?: string | null; incognito?: boolean };
@@ -14,6 +15,7 @@ type Commands = {
   undo_organization: [{ private: boolean }, void];
   import_bookmarks: [{ items: ImportItem[]; browserId: string; groupId: string | null; folders: boolean; preview: boolean }, ImportSummary];
   backup_export: [undefined, string];
+  backup_save: [undefined, string];
   backup_preview: [{ text: string }, BackupPreview];
   backup_restore: [{ text: string; restoreVault: boolean }, string];
   dock_resize: [{ height: number }, void];
@@ -40,11 +42,12 @@ type Commands = {
   companion_test_connection: [{ browserId: string }, number];
   save_bookmark: [{ bookmark: Bookmark; private: boolean }, void];
   delete_bookmark: [{ id: string; private: boolean }, void];
-  save_settings: [{ settings: Settings }, { notice: string }];
+  save_settings: [{ settings: Settings }, { notice: string; active_shortcuts?: ActiveShortcuts }];
   save_browser: [{ browser: Browser }, void];
   redetect_browsers: [undefined, void];
   browser_profiles: [{ browserId: string }, string[]];
   save_group: [{ group: Group; private: boolean }, void];
+  collapse_groups: [{ private: boolean }, void];
   delete_group: [{ id: string; private: boolean }, void];
   move_bookmark: [{ id: string; groupId: string | null; index: number; private: boolean; parentId?: string | null }, void];
   pairing_copy: [{ browserId: string }, void];

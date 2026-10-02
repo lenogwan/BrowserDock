@@ -76,6 +76,32 @@ pub async fn backup_export(app: tauri::AppHandle) -> Result<String, String> {
     .map_err(|_| "Backup task failed")?
 }
 #[tauri::command]
+pub async fn backup_save(app: tauri::AppHandle) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let directory = app
+            .path()
+            .download_dir()
+            .map_err(|_| "Cannot locate your Downloads folder")?;
+        let state = app
+            .try_state::<DesktopState>()
+            .ok_or("Configuration unavailable")?;
+        let config = state
+            .config
+            .lock()
+            .map_err(|_| "Configuration unavailable")?;
+        let _vault = state.vault.lock().map_err(|_| "Vault unavailable")?;
+        let path = portable::export_to_directory(
+            &config,
+            &state.path.with_file_name("vault.enc"),
+            &directory,
+        )?;
+        Ok(path.to_string_lossy().into_owned())
+    })
+    .await
+    .map_err(|_| "Backup save task failed")?
+}
+
+#[tauri::command]
 pub async fn backup_restore(
     app: tauri::AppHandle,
     text: String,

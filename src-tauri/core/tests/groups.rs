@@ -156,3 +156,63 @@ fn failed_private_group_write_keeps_memory_and_original_ciphertext() {
         original
     );
 }
+
+#[test]
+fn private_collapse_groups_persists_encrypted_and_requires_unlock() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("vault.enc");
+    let now = Instant::now();
+    let mut vault = Vault::new(path.clone(), Duration::from_secs(300));
+    assert!(vault.collapse_groups(now).is_err());
+    vault.create("correct horse battery", now).unwrap();
+    vault.save_group(group("secret-one", 0), now).unwrap();
+    vault.save_group(group("secret-two", 1), now).unwrap();
+    vault.save(bookmark("entry"), now).unwrap();
+    vault.collapse_groups(now).unwrap();
+    assert!(vault
+        .groups(now)
+        .unwrap()
+        .iter()
+        .all(|group| group.collapsed));
+    assert_eq!(vault.list(now).unwrap().len(), 1);
+    let saved = std::fs::read(&path).unwrap();
+    assert!(!saved
+        .windows(b"secret-one".len())
+        .any(|window| window == b"secret-one"));
+    vault.collapse_groups(now).unwrap();
+    assert_eq!(
+        std::fs::read(&path).unwrap(),
+        saved,
+        "already collapsed groups must not rewrite the vault"
+    );
+    vault.lock();
+    assert!(vault.collapse_groups(now).is_err());
+    vault.unlock("correct horse battery", now).unwrap();
+    assert!(vault
+        .groups(now)
+        .unwrap()
+        .iter()
+        .all(|group| group.collapsed));
+}
+
+#[test]
+fn failed_private_collapse_preserves_memory_and_ciphertext() {
+    let dir = tempfile::tempdir().unwrap();
+    let parent = dir.path().join("storage");
+    std::fs::create_dir(&parent).unwrap();
+    let path = parent.join("vault.enc");
+    let now = Instant::now();
+    let mut vault = Vault::new(path.clone(), Duration::from_secs(300));
+    vault.create("correct horse battery", now).unwrap();
+    vault.save_group(group("secret", 0), now).unwrap();
+    let original = std::fs::read(&path).unwrap();
+    let preserved = dir.path().join("preserved");
+    std::fs::rename(&parent, &preserved).unwrap();
+    std::fs::write(&parent, b"not a directory").unwrap();
+    assert!(vault.collapse_groups(now).is_err());
+    assert!(!vault.groups(now).unwrap()[0].collapsed);
+    assert_eq!(
+        std::fs::read(preserved.join("vault.enc")).unwrap(),
+        original
+    );
+}

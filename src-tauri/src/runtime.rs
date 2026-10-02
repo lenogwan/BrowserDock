@@ -18,6 +18,7 @@ pub struct DesktopState {
     pub size: Mutex<browserdock_launcher::window_size::SizeState>,
     pub config: Mutex<Config>,
     pub history: Mutex<browserdock_launcher::organization_history::PublicHistory>,
+    pub shortcuts: Mutex<browserdock_launcher::shortcut_bindings::ShortcutBindings>,
     pub vault: Mutex<Vault>,
     pub gate: browserdock_launcher::session::SessionGate,
     pub path: PathBuf,
@@ -31,6 +32,7 @@ pub struct DockData {
     groups: Vec<Group>,
     browsers: Vec<browserdock_launcher::config::Browser>,
     settings: Settings,
+    active_shortcuts: [Option<String>; 2],
 }
 #[tauri::command]
 pub async fn get_dock_data(state: tauri::State<'_, DesktopState>) -> Result<DockData, String> {
@@ -75,6 +77,7 @@ pub async fn get_dock_data(state: tauri::State<'_, DesktopState>) -> Result<Dock
         groups: c.groups.clone(),
         browsers: c.browsers.clone(),
         settings: Settings::from_config(&c),
+        active_shortcuts: state.shortcuts.lock().map_err(|_| "Shortcut state unavailable")?.active.clone(),
     })
 }
 pub fn lock(app: &tauri::AppHandle) {
@@ -334,6 +337,8 @@ pub async fn save_settings(
     app: tauri::AppHandle,
     mut settings: Settings,
 ) -> Result<SaveSettingsOutcome, String> {
+    settings.dock_shortcuts =
+        browserdock_launcher::settings::normalized_dock_shortcuts(&settings.dock_shortcuts)?;
     settings.validate()?;
     let state = app
         .try_state::<DesktopState>()
@@ -343,7 +348,7 @@ pub async fn save_settings(
         .lock()
         .map_err(|_| "Configuration unavailable")?;
     let old = Settings::from_config(&config);
-    // Shortcut changes are applied on restart, so current panic binding remains available.
+    // Native parsing checks the Windows-wide bindings before any write.
     use tauri_plugin_global_shortcut::Shortcut;
     let summon = settings
         .global_shortcut
@@ -404,7 +409,12 @@ pub async fn save_settings(
         .map_err(|_| "Vault unavailable")?
         .set_timeout(Duration::from_secs(settings.vault_timeout_minutes * 60));
     Ok(SaveSettingsOutcome {
-        notice: hot_swap_shortcuts(&app, &old, &settings),
+        notice: activate_shortcuts(&app, &settings),
+        active_shortcuts: state
+            .shortcuts
+            .lock()
+            .map(|bindings| bindings.active.clone())
+            .unwrap_or_default(),
     })
 }
 
@@ -413,6 +423,7 @@ pub async fn save_settings(
 #[derive(Serialize)]
 pub struct SaveSettingsOutcome {
     pub notice: String,
+    pub active_shortcuts: [Option<String>; 2],
 }
 
 fn register_summon(app: &tauri::AppHandle, shortcut: &str) -> Result<(), String> {
@@ -436,37 +447,34 @@ fn register_panic(app: &tauri::AppHandle, shortcut: &str) -> Result<(), String> 
         .map_err(|_| "shortcut is unavailable".to_string())
 }
 
-/// Swap global shortcuts without a restart. Previous bindings are released
-/// first so swapped pairs (A<->B) cannot collide; anything that fails to grab
-/// is rolled back to the previous binding and reported for a restart retry.
-/// Only the exact previous strings are released — the temporary Escape
-/// binding owned by `dock_escape` is never touched.
-fn hot_swap_shortcuts(app: &tauri::AppHandle, old: &Settings, new: &Settings) -> String {
-    if old.global_shortcut == new.global_shortcut && old.panic_shortcut == new.panic_shortcut {
-        return String::new();
-    }
-    let _ = app
-        .global_shortcut()
-        .unregister(old.global_shortcut.as_str());
-    let _ = app
-        .global_shortcut()
-        .unregister(old.panic_shortcut.as_str());
-    let mut problems = vec![];
-    if register_summon(app, &new.global_shortcut).is_err() {
-        if register_summon(app, &old.global_shortcut).is_ok() {
-            problems.push("Summon shortcut is in use by another app, so the previous one stays active until restart");
-        } else {
-            problems.push("Summon shortcut could not be activated; restart BrowserDock to retry");
+/// Replace actual native registrations; roll back a failed pair and keep Escape.
+pub fn activate_shortcuts(app: &tauri::AppHandle, settings: &Settings) -> String {
+    use browserdock_launcher::shortcut_bindings::{ShortcutKind, ShortcutRegistry};
+    struct NativeRegistry<'a>(&'a tauri::AppHandle);
+    impl ShortcutRegistry for NativeRegistry<'_> {
+        fn register(&mut self, kind: ShortcutKind, binding: &str) -> Result<(), String> {
+            match kind {
+                ShortcutKind::Summon => register_summon(self.0, binding),
+                ShortcutKind::Panic => register_panic(self.0, binding),
+            }
+        }
+        fn unregister(&mut self, binding: &str) -> Result<(), String> {
+            self.0
+                .global_shortcut()
+                .unregister(binding)
+                .map_err(|_| "Cannot release shortcut".into())
         }
     }
-    if register_panic(app, &new.panic_shortcut).is_err() {
-        if register_panic(app, &old.panic_shortcut).is_ok() {
-            problems.push("Panic shortcut is in use by another app, so the previous one stays active until restart");
-        } else {
-            problems.push("Panic shortcut could not be activated; restart BrowserDock to retry");
-        }
-    }
-    problems.join(" ")
+    let Some(state) = app.try_state::<DesktopState>() else {
+        return "Shortcut state unavailable".into();
+    };
+    let Ok(mut bindings) = state.shortcuts.lock() else {
+        return "Shortcut state unavailable".into();
+    };
+    bindings.apply(
+        [&settings.global_shortcut, &settings.panic_shortcut],
+        &mut NativeRegistry(app),
+    )
 }
 pub fn initialize(app: &tauri::AppHandle, config: Config, path: PathBuf) {
     let timeout = Settings::from_config(&config).vault_timeout_minutes;
@@ -482,6 +490,7 @@ pub fn initialize(app: &tauri::AppHandle, config: Config, path: PathBuf) {
         )),
         config: Mutex::new(config),
         history: Mutex::new(Default::default()),
+        shortcuts: Mutex::new(Default::default()),
         vault: Mutex::new(Vault::new(
             path.with_file_name("vault.enc"),
             Duration::from_secs(timeout * 60),

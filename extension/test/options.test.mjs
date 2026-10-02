@@ -93,3 +93,15 @@ test('connection feedback follows actual companion state without exposing creden
   await p.polls[0]();
   assert.match(p.nodes['connection-status'].textContent, /unavailable/i);
 });
+
+test('diagnostics distinguish scheduling delay from recovery duration', async () => {
+  const p = await page();
+  p.runtime.sendMessage = async () => ({ state: 'connected', diagnostics: [
+    { at: 1000, reason: 'background_delayed', durationMs: 80000 },
+    { at: 81000, reason: 'heartbeat_probe' }
+  ] });
+  await p.polls[0]();
+  assert.match(p.nodes['connection-diagnostics'].textContent, /background_delayed.*scheduling delay 80.0s/);
+  assert.match(p.nodes['connection-diagnostics'].textContent, /heartbeat_probe/);
+  assert.ok(!p.nodes['connection-diagnostics'].textContent.includes('recovered in'));
+});

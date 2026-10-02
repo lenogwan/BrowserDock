@@ -41,6 +41,7 @@ struct Client {
     browser: String,
     tx: mpsc::Sender<Message>,
     tabs: Vec<Tab>,
+    digest: Option<Vec<DigestTab>>,
     containers: Vec<Container>,
     pending: HashMap<String, oneshot::Sender<Response>>,
     probes: HashMap<Vec<u8>, oneshot::Sender<()>>,
@@ -63,6 +64,32 @@ struct TabPage {
     pages: usize,
     #[serde(flatten)]
     sync: TabSync,
+}
+
+fn digest_tabs(source: &[Tab]) -> Vec<DigestTab> {
+    let mut seen = HashSet::new();
+    let mut tabs = Vec::new();
+    for tab in source {
+        let Ok(url) = parse_url(&tab.url) else {
+            continue;
+        };
+        let Some(host) = url.host_str() else { continue };
+        if seen.insert((
+            host.to_owned(),
+            tab.cookie_store_id.clone(),
+            tab.group_title.clone(),
+            tab.group_color.clone(),
+        )) {
+            tabs.push(DigestTab {
+                host: host.to_owned(),
+                cookie_store_id: tab.cookie_store_id.clone(),
+                group_title: tab.group_title.clone(),
+                group_color: tab.group_color.clone(),
+            });
+        }
+    }
+    tabs.sort_by(|a, b| a.host.cmp(&b.host));
+    tabs
 }
 
 fn request_deadline_ms() -> u64 {
@@ -344,35 +371,20 @@ impl ServerHandle {
     /// Deduplicated per-instance host inventory for the UI poll loop.
     /// Unparseable tab URLs are skipped, matching indicator semantics.
     pub fn tabs_digest(&self) -> Vec<InstanceDigest> {
-        let registry = self
+        let mut registry = self
             .0
             .registry
             .lock()
             .unwrap_or_else(|error| error.into_inner());
         let mut digests = Vec::with_capacity(registry.len());
-        for (id, client) in registry.iter() {
-            let mut seen = HashSet::new();
-            let mut tabs = Vec::new();
-            for tab in &client.tabs {
-                let Ok(url) = parse_url(&tab.url) else {
-                    continue;
-                };
-                let Some(host) = url.host_str() else { continue };
-                if seen.insert((
-                    host.to_owned(),
-                    tab.cookie_store_id.clone(),
-                    tab.group_title.clone(),
-                    tab.group_color.clone(),
-                )) {
-                    tabs.push(DigestTab {
-                        host: host.to_owned(),
-                        cookie_store_id: tab.cookie_store_id.clone(),
-                        group_title: tab.group_title.clone(),
-                        group_color: tab.group_color.clone(),
-                    });
-                }
-            }
-            tabs.sort_by(|a, b| a.host.cmp(&b.host));
+        for (id, client) in registry.iter_mut() {
+            // Build only when the UI first consumes a new complete snapshot.
+            // Idle polls clone a bounded digest without reparsing URLs or sorting
+            // while the connection registry is locked.
+            let tabs = client
+                .digest
+                .get_or_insert_with(|| digest_tabs(&client.tabs))
+                .clone();
             digests.push(InstanceDigest {
                 instance_id: id.clone(),
                 browser: client.browser.clone(),
@@ -940,6 +952,7 @@ async fn connection(stream: TcpStream, token: &str, registry: Registry, capture:
                 browser: auth.browser.clone(),
                 tx,
                 tabs: vec![],
+                digest: None,
                 containers: vec![],
                 pending: HashMap::new(),
                 probes: HashMap::new(),
@@ -1105,6 +1118,7 @@ fn receive(value: Value, registry: &Registry, instance_id: &str, browser: &str) 
             // Sender throttling does not guarantee spaced arrival after
             // transport/event-loop stalls. Never discard the newest snapshot.
             client.tabs = snapshot.tabs;
+            client.digest = None;
         }
     } else if value.get("action").and_then(Value::as_str) == Some("TABS_SYNC") {
         let Ok(sync) = serde_json::from_value::<TabSync>(value) else {
@@ -1115,6 +1129,7 @@ fn receive(value: Value, registry: &Registry, instance_id: &str, browser: &str) 
         }
         client.snapshot = None;
         client.tabs = sync.tabs;
+        client.digest = None;
     } else {
         let Ok(reply) = serde_json::from_value::<Response>(value) else {
             return false;

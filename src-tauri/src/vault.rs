@@ -347,6 +347,18 @@ impl Vault {
         groups::delete_group(&mut groups, &mut bookmarks, id)?;
         self.persist(bookmarks, groups, now)
     }
+    pub fn collapse_groups(&mut self, now: Instant) -> Result<(), String> {
+        self.expire(now);
+        let state = self.unlocked.as_ref().ok_or("Vault is locked")?;
+        if state.groups.iter().all(|group| group.collapsed) {
+            return Ok(());
+        }
+        let mut groups = state.groups.clone();
+        for group in &mut groups {
+            group.collapsed = true;
+        }
+        self.persist(state.bookmarks.clone(), groups, now)
+    }
     pub fn move_bookmark(
         &mut self,
         id: &str,

@@ -64,3 +64,65 @@ test('lock clears private selection metadata and hints while keeping public sele
   controller.selecting = true; controller.selectionPrivate = false; controller.selectedIds = ['public-id']; controller.clearPrivatePresentation();
   assert.deepEqual([...controller.selectedIds], ['public-id']); assert.equal(controller.selecting, true);
 });
+
+test('clone drafts preserve details, use an independent ID and append only within their sibling scope', () => {
+  const controller = new BookmarksController();
+  const source = { ...item('original'), group_id: 'work', sort_order: 2, pinned: true,
+    tags: ['work'], browser_options: { container: 'Work', incognito: true }, future: { values: [1] } };
+  controller.bookmarks = [source, { ...item('sibling'), group_id: 'work', sort_order: 7 },
+    { ...item('other-group'), group_id: 'other', sort_order: 99 },
+    { ...item('other-scope'), group_id: 'work', private: true, sort_order: 88 },
+    { ...item('child'), group_id: 'work', parent_id: source.id, sort_order: 55 }];
+  globalThis.__bookmarkTestInvoke = () => { throw Error('Clone must not write'); };
+  controller.editing = controller.bookmarks[0];
+  controller.cloneBookmark(controller.editing, controller.bookmarks);
+  const draft = controller.editing;
+  assert.notEqual(draft.id, source.id); assert.equal(draft.sort_order, 8);
+  assert.equal(draft.pinned, true); assert.equal(draft.title, source.title);
+  assert.equal(draft.browser_options.container, 'Work'); assert.equal(draft.browser_options.incognito, true);
+  draft.tags.push('copy'); draft.browser_options.container = 'Copy'; draft.future.values.push(2);
+  assert.deepEqual(source.tags, ['work']); assert.equal(source.browser_options.container, 'Work'); assert.deepEqual(source.future.values, [1]);
+  assert.equal(controller.bookmarks.length, 5);
+  controller.cloneBookmark(source, controller.bookmarks);
+  assert.notEqual(controller.editing.id, draft.id);
+});
+
+test('private child clones follow parent routing and are cleared on lock', () => {
+  const controller = new BookmarksController();
+  const parent = { ...item('parent'), private: true, group_id: 'private', target_browser: 'mullvad', browser_options: { container: 'Secret context' } };
+  const child = { ...item('child'), private: true, group_id: 'private', parent_id: parent.id, sort_order: 3, target_browser: 'chrome', browser_options: { profile: 'Profile 1', incognito: true } };
+  controller.cloneBookmark(child, [parent, child]);
+  assert.equal(controller.editing.private, true); assert.equal(controller.editing.parent_id, parent.id);
+  assert.equal(controller.editing.target_browser, 'mullvad'); assert.equal(controller.editing.browser_options.profile, null);
+  assert.equal(controller.editing.browser_options.container, 'Secret context'); assert.equal(controller.editing.browser_options.incognito, true);
+  assert.equal(controller.editing.sort_order, 4);
+  controller.clearPrivatePresentation(); assert.equal(controller.editing, null);
+});
+
+test('collapse all batches group writes per scope and clears only scoped expansion', async () => {
+  const controller = new BookmarksController(), ctx = context(), calls = [];
+  controller.groups = [group('public-a', 0), group('public-b', 1)].map(item => ({ ...item, private: false }));
+  ctx.privateGroups = [group('private-a', 0)];
+  controller.treeExpanded = { 'parent-public': true, 'secret-private': true };
+  controller.selecting = true; controller.selectedIds = ['public-a'];
+  globalThis.__bookmarkTestInvoke = async (cmd, args) => { calls.push({cmd,args}); };
+  await controller.collapseAll([false], ctx);
+  assert.deepEqual(calls, [{cmd:'collapse_groups',args:{private:false}}]);
+  assert.deepEqual({ ...controller.treeExpanded }, {'secret-private':true});
+  assert.equal(controller.selecting, false); assert.equal(controller.moving, false);
+  controller.groups = controller.groups.map(group => ({...group,collapsed:true}));
+  calls.length = 0;
+  await controller.collapseAll([false,true], ctx);
+  assert.deepEqual(calls, [{cmd:'collapse_groups',args:{private:true}}]);
+  assert.deepEqual({ ...controller.treeExpanded }, {});
+});
+
+test('late private collapse cannot refresh or alter a new-session undo state', async () => {
+  const controller = new BookmarksController(), ctx = context(), pending = deferred(); let refreshed = 0;
+  ctx.privateGroups = [group('private-a', 0)]; ctx.refreshPrivate = async () => { refreshed++; };
+  globalThis.__bookmarkTestInvoke = () => pending.promise;
+  const collapsing = controller.collapseAll([true], ctx);
+  ctx.generation++; controller.clearPrivatePresentation(); controller.privateUndo = true;
+  pending.resolve(); await collapsing;
+  assert.equal(refreshed, 0); assert.equal(controller.privateUndo, true); assert.equal(controller.moving, false);
+});

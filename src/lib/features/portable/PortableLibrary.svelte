@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onDestroy, tick } from 'svelte';
+  import { revealItemInDir } from '@tauri-apps/plugin-opener';
   import { invokeCommand, type ImportItem, type ImportSummary, type BackupPreview } from '../../platform/tauri/commands';
   import type { Browser, Group } from '../../shared/types';
   import { parseBookmarkHtml } from './import.js';
@@ -11,8 +12,8 @@
   let summary = $state<ImportSummary | null>(null), backup = $state<BackupPreview | null>(null), backupText = $state(''), restoreVault = $state(false), confirmed = $state(false);
   let importName = $state(''), backupName = $state(''), active = $state(''), error = $state(''), message = $state(''), generation = 0;
   let feedback = $state<HTMLDivElement>();
-  const downloads = new Set<string>();
-  onDestroy(() => { generation++; for (const url of downloads) URL.revokeObjectURL(url); });
+  let savedBackup = $state('');
+  onDestroy(() => { generation++; });
   async function run(label: string, action: () => Promise<void>) {
     if (busy || !native) return;
     busy = true; active = label; error = ''; message = '';
@@ -52,13 +53,18 @@
       await refresh();
     });
   }
-  async function downloadBackup() {
-    await run('Preparing your backup…', async () => {
-      const text = await invokeCommand('backup_export');
-      const url = URL.createObjectURL(new Blob([text], { type: 'application/json' })); downloads.add(url);
-      const a = document.createElement('a'); a.href = url; a.download = `browserdock-library-${new Date().toISOString().slice(0, 10)}.json`; a.click();
-      setTimeout(() => { URL.revokeObjectURL(url); downloads.delete(url); }, 1000);
-      message = 'Backup download started. The encrypted vault needs its original passphrase to unlock.';
+  async function saveBackup() {
+    await run('Saving your backup…', async () => {
+      const path = await invokeCommand('backup_save');
+      savedBackup = path;
+      message = `Backup saved to ${path}. The encrypted vault needs its original passphrase to unlock.`;
+    });
+  }
+  async function showBackup() {
+    if (!savedBackup) return;
+    await run('Opening backup folder…', async () => {
+      try { await revealItemInDir(savedBackup); }
+      catch { throw Error(`Your backup is saved at ${savedBackup}, but the folder could not open. Open Downloads in File Explorer.`); }
     });
   }
   async function readBackup(event: Event) {
@@ -127,10 +133,11 @@
   </section>
   <section aria-labelledby="library-backup" class="library-card">
     <h2 id="library-backup">Back up your library</h2>
-    <p>Download public bookmarks and groups, plus your encrypted vault if one exists.</p>
+    <p>Save public bookmarks and groups, plus your encrypted vault if one exists, to your Downloads folder.</p>
     <p><strong>Public bookmarks are readable in the backup. Only the vault stays encrypted</strong> and needs its original passphrase.</p>
     <details><summary>What stays on this computer?</summary><p>Browser paths, app settings, routing rules and pairing credentials are excluded. Reconnect your browsers separately on another computer.</p></details>
-    <button class="secondary" disabled={busy || !native} onclick={downloadBackup}>{active === 'Preparing your backup…' ? 'Preparing backup…' : 'Download library backup'}</button>
+    <button class="secondary" disabled={busy || !native} onclick={saveBackup}>{active === 'Saving your backup…' ? 'Saving backup…' : 'Save library backup'}</button>
+    {#if savedBackup}<p class="filename">Last saved backup: {savedBackup}</p><button class="secondary" disabled={busy} onclick={showBackup}>Show in folder</button>{/if}
   </section>
   <section aria-labelledby="library-restore" class="library-card">
     <h2 id="library-restore">Restore a backup</h2>

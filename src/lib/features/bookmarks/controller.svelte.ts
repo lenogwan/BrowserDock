@@ -34,6 +34,25 @@ export class BookmarksController {
     this.selectedIds = this.selectedIds.includes(bookmark.id) ? this.selectedIds.filter(id => id !== bookmark.id) : [...this.selectedIds, bookmark.id];
   }
   cancelSelection() { this.selecting = false; this.selectedIds = []; }
+  async collapseAll(scopes: boolean[], context: BookmarkContext) {
+    if (this.moving) return;
+    const current = context.generation;
+    this.moving = true;
+    this.cancelSelection();
+    this.treeExpanded = Object.fromEntries(Object.entries(this.treeExpanded).filter(([key]) => !scopes.includes(key.endsWith('-private'))));
+    saveExpansion(this.treeExpanded);
+    try {
+      for (const privateScope of scopes) {
+        if (privateScope && current !== context.generation) return;
+        const groups = privateScope ? context.privateGroups : this.groups;
+        if (!groups.some(group => !group.collapsed)) continue;
+        await invokeCommand('collapse_groups', { private: privateScope });
+        if (privateScope && current !== context.generation) return;
+        if (privateScope) { this.privateUndo = false; await context.refreshPrivate(); }
+        else { this.publicUndo = false; await context.refreshPublic(); }
+      }
+    } finally { this.moving = false; }
+  }
   async moveSelected(groupId: string | null, context: BookmarkContext) {
     if (this.moving || !this.selectedIds.length) return;
     const current = context.generation, privateScope = this.selectionPrivate;
@@ -82,6 +101,25 @@ export class BookmarksController {
       id: entryId(), title: '', url, target_browser: browser,
       tags: [], icon: '', private: isPrivate,
     };
+  }
+
+  cloneBookmark(bookmark: Bookmark, scope: Bookmark[]) {
+    const copy = structuredClone($state.snapshot(bookmark));
+    const siblings = scope.filter(item => !!item.private === !!copy.private
+      && (item.group_id ?? null) === (copy.group_id ?? null)
+      && (item.parent_id ?? null) === (copy.parent_id ?? null));
+    copy.id = entryId();
+    copy.sort_order = Math.max(-1, ...siblings.map(item => item.sort_order ?? 0)) + 1;
+    // A new child follows its parent, just like a newly created/nested bookmark.
+    const parent = scope.find(item => item.id === copy.parent_id && !!item.private === !!copy.private);
+    if (parent) {
+      copy.group_id = parent.group_id;
+      copy.target_browser = parent.target_browser;
+      copy.browser_options = { ...copy.browser_options,
+        profile: parent.browser_options?.profile ?? null,
+        container: parent.browser_options?.container ?? null };
+    }
+    this.editing = copy;
   }
 
   addGroup(isPrivate: boolean, count: number) {

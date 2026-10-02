@@ -207,6 +207,110 @@ async fn tabs_digest_returns_deduplicated_hosts_for_indicator_polls() {
 }
 
 #[tokio::test]
+async fn digest_cache_tracks_complete_snapshots_containers_and_disconnects() {
+    let server = BoundServer::bind(0, TOKEN).await.unwrap().start();
+    let mut ws = connect(server.port(), "firefox", &uuid::Uuid::new_v4().to_string()).await;
+    async fn flush(ws: &mut Socket) {
+        ws.send(Message::Text(json!({"action":"PING"}).to_string()))
+            .await
+            .unwrap();
+        assert_eq!(read(ws).await["action"], "PONG");
+    }
+    ws.send(Message::Text(json!({"action":"TABS_SYNC", "browser":"firefox", "tabs":[
+        {"id":1, "url":"https://old.example/", "title":"Old", "cookieStoreId":"firefox-container-1"}
+    ]}).to_string())).await.unwrap();
+    flush(&mut ws).await;
+    assert_eq!(server.tabs_digest()[0].tabs[0].host, "old.example");
+    let snapshot = uuid::Uuid::new_v4().to_string();
+    let tabs: Vec<_> = (0..200)
+        .map(|id| json!({"id":id,"url":"https://new.example/","title":"New"}))
+        .collect();
+    ws.send(Message::Text(
+        json!({"action":"TABS_SYNC_PAGE", "browser":"firefox",
+            "snapshot_id":snapshot,"page":0,"pages":2,"tabs":tabs
+        })
+        .to_string(),
+    ))
+    .await
+    .unwrap();
+    flush(&mut ws).await;
+    assert_eq!(
+        server.tabs_digest()[0].tabs[0].host,
+        "old.example",
+        "partial pages retain the complete cached digest"
+    );
+    ws.send(Message::Text(json!({"action":"TABS_SYNC_PAGE", "browser":"firefox",
+        "snapshot_id":snapshot,"page":1,"pages":2,"tabs":[{"id":200,"url":"https://last.example/","title":"Last"}]
+    }).to_string())).await.unwrap();
+    flush(&mut ws).await;
+    assert_eq!(server.tabs_digest()[0].tabs.len(), 2);
+    assert_eq!(server.tabs_digest()[0].tabs[1].host, "new.example");
+    ws.send(Message::Text(
+        json!({"action":"CONTAINERS_LIST", "containers":[
+            {"name":"Renamed", "cookieStoreId":"firefox-container-1"}
+        ]})
+        .to_string(),
+    ))
+    .await
+    .unwrap();
+    flush(&mut ws).await;
+    assert_eq!(server.tabs_digest()[0].containers[0].name, "Renamed");
+    ws.send(Message::Text(
+        json!({"action":"TABS_SYNC", "browser":"firefox", "tabs":[]}).to_string(),
+    ))
+    .await
+    .unwrap();
+    flush(&mut ws).await;
+    assert!(server.tabs_digest()[0].tabs.is_empty());
+    ws.close(None).await.unwrap();
+    timeout(Duration::from_secs(2), async {
+        while !server.tabs_digest().is_empty() {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .unwrap();
+    server.shutdown();
+}
+
+// Manual benchmark: includes authenticated transport and the negotiated tab cap.
+#[tokio::test]
+#[ignore = "manual performance measurement"]
+async fn benchmark_idle_digest_polls() {
+    let server = BoundServer::bind(0, TOKEN).await.unwrap().start();
+    let mut ws = connect(server.port(), "firefox", &uuid::Uuid::new_v4().to_string()).await;
+    let snapshot = uuid::Uuid::new_v4().to_string();
+    for page in 0..10 {
+        let tabs: Vec<_> = (page * 200..(page + 1) * 200).map(|id| json!({
+            "id": id, "url": format!("https://host{}.example/path", id % 100), "title": "Example"
+        })).collect();
+        ws.send(Message::Text(
+            json!({"action":"TABS_SYNC_PAGE", "browser":"firefox",
+                "snapshot_id":snapshot, "page":page, "pages":10, "tabs":tabs
+            })
+            .to_string(),
+        ))
+        .await
+        .unwrap();
+    }
+    timeout(Duration::from_secs(2), async {
+        while server.instances()[0].tabs.len() != 2000 {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(server.tabs_digest()[0].tabs.len(), 100);
+    let start = std::time::Instant::now();
+    for _ in 0..500 {
+        std::hint::black_box(server.tabs_digest());
+    }
+    println!("500 idle digest polls / 2000 tabs: {:?}", start.elapsed());
+    ws.close(None).await.unwrap();
+    server.shutdown();
+}
+
+#[tokio::test]
 async fn rejects_web_page_origins_before_authentication() {
     use tokio_tungstenite::tungstenite::client::IntoClientRequest;
     let server = BoundServer::bind(0, TOKEN).await.unwrap().start();

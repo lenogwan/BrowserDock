@@ -49,7 +49,7 @@ await page.addInitScript(() => {
           if (!args.preview) publicItems.push({ ...make('Imported'), title: args.items[0].title, url: args.items[0].url });
           return { added: 1, duplicates: 0, groups_added: 0 };
         }
-        case 'backup_export': return JSON.stringify({ format: 'BrowserDock library', version: 1, bookmarks: publicItems, groups, vault_hex: 'ab'.repeat(44) });
+        case 'backup_save': return 'C:\\Users\\Test\\Downloads\\browserdock-library-test.json';
         case 'backup_preview': { const data = JSON.parse(args.text); return { bookmarks: data.bookmarks.length, groups: data.groups.length, has_vault: !!data.vault_hex }; }
         case 'backup_restore': if (window.testState.failRestore) throw Error('Restore rejected before changes'); if (window.testState.holdRestore) await new Promise(resolve => window.testState.pendingRestore = resolve); vault.locked = true; history.private = null; window.emitTest('vault-locked'); return 'C:\\BrowserDock\\restore-backup-test';
         default: return;

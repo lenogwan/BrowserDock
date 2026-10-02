@@ -179,6 +179,65 @@ fn import_skips_duplicates_preserves_raw_entries_and_validates_atomically() {
     assert_eq!(summary.added, 0);
 }
 #[test]
+fn backup_save_creates_a_complete_archive_and_preserves_previous_downloads() {
+    let dir = tempfile::tempdir().unwrap();
+    let source = dir.path().join("vault.enc");
+    let encrypted = vec![0xab; 44];
+    std::fs::write(&source, &encrypted).unwrap();
+    let mut current = config();
+    current
+        .settings
+        .insert("ws_token".into(), json!("pairing-secret"));
+    current
+        .bookmarks
+        .push(serde_json::to_value(bookmark("public", None)).unwrap());
+    let downloads = dir.path().join("Downloads");
+    let first = portable::export_to_directory(&current, &source, &downloads).unwrap();
+    assert_eq!(first.parent(), Some(downloads.as_path()));
+    assert!(first
+        .file_name()
+        .unwrap()
+        .to_string_lossy()
+        .starts_with("browserdock-library-"));
+    let first_bytes = std::fs::read(&first).unwrap();
+    let text = std::str::from_utf8(&first_bytes).unwrap();
+    let archive = portable::preview(text, &current).unwrap();
+    assert_eq!(archive.bookmarks.len(), 1);
+    assert_eq!(archive.vault_hex.as_deref(), Some("ab".repeat(44).as_str()));
+    assert!(!text.contains("pairing-secret"));
+    current.bookmarks.clear();
+    let second = portable::export_to_directory(&current, &source, &downloads).unwrap();
+    assert_ne!(first, second);
+    assert_eq!(std::fs::read(&first).unwrap(), first_bytes);
+    assert_eq!(
+        std::fs::read_dir(&downloads).unwrap().count(),
+        2,
+        "no staging files remain"
+    );
+    assert!(
+        portable::preview(&std::fs::read_to_string(second).unwrap(), &current)
+            .unwrap()
+            .bookmarks
+            .is_empty()
+    );
+}
+
+#[test]
+fn backup_save_errors_do_not_leave_incomplete_archives() {
+    let dir = tempfile::tempdir().unwrap();
+    let source = dir.path().join("vault.enc");
+    let downloads = dir.path().join("Downloads");
+    let mut invalid = config();
+    invalid.bookmarks.push(json!({"unreadable": true}));
+    assert!(portable::export_to_directory(&invalid, &source, &downloads).is_err());
+    assert!(!downloads.exists(), "validation happens before writing");
+    std::fs::write(&downloads, b"existing file").unwrap();
+    assert!(portable::export_to_directory(&config(), &source, &downloads).is_err());
+    assert_eq!(std::fs::read(&downloads).unwrap(), b"existing file");
+    assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
+}
+
+#[test]
 fn archive_omits_credentials_and_exports_ciphertext_even_when_unlocked() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("vault.enc");

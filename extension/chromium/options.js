@@ -134,7 +134,7 @@ async function refreshConnectionStatus() {
     };
     connectionStatus.textContent = labels[result?.state] ?? 'Connection status unavailable. Reload the extension if this continues.';
     const diagnostics = document.getElementById('connection-diagnostics');
-    if (diagnostics) diagnostics.textContent = (result?.diagnostics ?? []).map(entry => `${new Date(entry.at).toLocaleTimeString()} ${entry.reason}${entry.durationMs === undefined ? '' : ` (recovered in ${(entry.durationMs / 1000).toFixed(1)}s)`}`).join('\n') || 'No connection events yet.';
+    if (diagnostics) diagnostics.textContent = (result?.diagnostics ?? []).map(entry => `${new Date(entry.at).toLocaleTimeString()} ${entry.reason}${entry.durationMs === undefined ? '' : ` (${entry.reason === 'background_delayed' ? 'scheduling delay' : 'recovered in'} ${(entry.durationMs / 1000).toFixed(1)}s)`}`).join('\n') || 'No connection events yet.';
   } catch { connectionStatus.textContent = 'Connection status unavailable. Reload the extension if this continues.'; }
 }
 void refreshConnectionStatus();
