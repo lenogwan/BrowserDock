@@ -79,3 +79,41 @@ pub(crate) fn redetect_browsers(
     }
     Ok(next.browsers.clone())
 }
+
+#[tauri::command]
+pub(crate) fn route_explanation(
+    app: tauri::AppHandle,
+    url: String,
+    browser_id: Option<String>,
+    bookmark_id: Option<String>,
+    bookmark_private: Option<bool>,
+) -> Result<launcher::route_explanation::Explanation, String> {
+    let config = current_config(&app)?;
+    let epoch = if bookmark_private == Some(true) {
+        Some(
+            app.state::<runtime::DesktopState>()
+                .gate
+                .ticket()
+                .ok_or("Vault is locked")?,
+        )
+    } else {
+        None
+    };
+    let bookmark = selected_bookmark(&app, &config, bookmark_id.as_deref(), bookmark_private)?;
+    let scope = if bookmark.is_some() {
+        crate::bookmark_scope(&app, &config, bookmark_private == Some(true))?
+    } else {
+        vec![]
+    };
+    let result = launcher::route_explanation::explain(
+        &config,
+        &url,
+        browser_id.as_deref(),
+        bookmark.as_ref(),
+        &scope,
+    )?;
+    if epoch.is_some_and(|epoch| !app.state::<runtime::DesktopState>().gate.valid(epoch)) {
+        return Err("Vault is locked".into());
+    }
+    Ok(result)
+}

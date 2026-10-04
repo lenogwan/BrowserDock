@@ -45,6 +45,8 @@ struct Client {
     containers: Vec<Container>,
     pending: HashMap<String, oneshot::Sender<Response>>,
     probes: HashMap<Vec<u8>, oneshot::Sender<()>>,
+    public_pending: HashMap<String, oneshot::Sender<Result<Vec<PublicTab>, String>>>,
+    public_review: bool,
     snapshot: Option<TabSnapshot>,
     tab_groups: bool,
 }
@@ -115,6 +117,37 @@ pub struct Instance {
     pub browser: String,
     pub tabs: Vec<Tab>,
     pub containers: Vec<Container>,
+}
+
+/// Fresh public tabs for explicit capture. Never derived from the opt-in private cache.
+#[derive(Clone, Debug, serde::Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct PublicTab {
+    pub id: i64,
+    pub title: String,
+    pub url: String,
+    pub container: Option<String>,
+    pub incognito: bool,
+}
+impl PublicTab {
+    pub fn valid(&self) -> bool {
+        !self.incognito
+            && self.id >= 0
+            && self.url.len() <= MAX_URL_BYTES
+            && parse_url(&self.url).is_ok()
+            && !self.title.trim().is_empty()
+            && self.title.len() <= 512
+            && self
+                .container
+                .as_ref()
+                .is_none_or(|v| crate::options::valid_name(v))
+    }
+}
+#[derive(Serialize)]
+pub struct PublicTabs {
+    pub instance_id: String,
+    pub browser: String,
+    pub tabs: Vec<PublicTab>,
 }
 
 /// Compact poll payload for open-tab indicators: parsed, deduplicated hosts
@@ -274,6 +307,65 @@ impl ServerHandle {
             .lock()
             .unwrap_or_else(|error| error.into_inner()) = Some(handler);
     }
+    pub async fn public_tabs(&self, instance_id: &str) -> Result<PublicTabs, String> {
+        let id = uuid::Uuid::new_v4().to_string();
+        let (browser, receiver) = {
+            let mut registry = self.0.registry.lock().unwrap_or_else(|e| e.into_inner());
+            let client = registry
+                .get_mut(instance_id)
+                .ok_or("Companion disconnected. Refresh the tab list.")?;
+            if !client.public_review {
+                return Err("Update this browser's companion to review public tabs".into());
+            }
+            client
+                .public_pending
+                .retain(|_, sender| !sender.is_closed());
+            if client.public_pending.len() >= 4 {
+                return Err("A tab review is already in progress".into());
+            }
+            let (sender, receiver) = oneshot::channel();
+            client
+                .tx
+                .try_send(Message::Text(
+                    json!({"action":"LIST_PUBLIC_TABS", "id":id}).to_string(),
+                ))
+                .map_err(|_| "Companion is busy or disconnected")?;
+            client.public_pending.insert(id.clone(), sender);
+            (client.browser.clone(), receiver)
+        };
+        let _pending = PendingGuard {
+            registry: self.0.registry.clone(),
+            instance_id: instance_id.into(),
+            id,
+        };
+        let tabs = timeout(REQUEST_TIMEOUT, receiver)
+            .await
+            .map_err(|_| "Tab review timed out. Refresh before saving.")?
+            .map_err(|_| "Companion disconnected. Refresh before saving.")??;
+        Ok(PublicTabs {
+            instance_id: instance_id.into(),
+            browser,
+            tabs,
+        })
+    }
+    pub async fn all_public_tabs(&self) -> Result<Vec<PublicTabs>, String> {
+        let ids: Vec<_> = self
+            .tabs_digest()
+            .into_iter()
+            .map(|i| i.instance_id)
+            .collect();
+        if ids.is_empty() {
+            return Err("Connect a companion to review public tabs".into());
+        }
+        self.public_tabs_for(&ids).await
+    }
+    pub async fn public_tabs_for(&self, ids: &[String]) -> Result<Vec<PublicTabs>, String> {
+        futures_util::future::join_all(ids.iter().map(|id| self.public_tabs(id)))
+            .await
+            .into_iter()
+            .collect()
+    }
+
     /// A fresh, read-only WebSocket round trip to every instance of one browser.
     /// Control frames work with existing companions and never dispatch tab actions.
     pub async fn test_connection(&self, browser: &str) -> Result<usize, String> {
@@ -836,6 +928,7 @@ impl Drop for PendingGuard {
             .get_mut(&self.instance_id)
         {
             client.pending.remove(&self.id);
+            client.public_pending.remove(&self.id);
         }
     }
 }
@@ -958,6 +1051,8 @@ async fn connection(stream: TcpStream, token: &str, registry: Registry, capture:
                 probes: HashMap::new(),
                 snapshot: None,
                 tab_groups: auth.capabilities.iter().any(|v| v == "tab_groups_v1"),
+                public_review: auth.capabilities.iter().any(|v| v == "public_tabs_v1"),
+                public_pending: HashMap::new(),
             },
         );
     }
@@ -970,7 +1065,7 @@ async fn connection(stream: TcpStream, token: &str, registry: Registry, capture:
         .unwrap_or_else(|error| error.into_inner())
         .is_some();
     let capabilities = if capture_enabled {
-        vec!["paged_tabs_v1", "capture_public_v1"]
+        vec!["paged_tabs_v1", "capture_public_v1", "capture_batch_v1"]
     } else {
         vec!["paged_tabs_v1"]
     };
@@ -1002,8 +1097,8 @@ async fn connection(stream: TcpStream, token: &str, registry: Registry, capture:
                         let Ok(value) = serde_json::from_str::<Value>(&text) else { break; };
                         if value.get("action").and_then(Value::as_str) == Some("PING") {
                             if !matches!(timeout(REQUEST_TIMEOUT, socket.send(Message::Text(json!({"action":"PONG"}).to_string()))).await, Ok(Ok(()))) { break; }
-                        } else if matches!(value.get("action").and_then(Value::as_str), Some("CAPTURE_GROUPS" | "CAPTURE_SAVE")) {
-                            if text.len() > 16384 { break; }
+                        } else if matches!(value.get("action").and_then(Value::as_str), Some("CAPTURE_GROUPS" | "CAPTURE_SAVE" | "CAPTURE_BATCH")) {
+                            if text.len() > 160 * 1024 { break; }
                             let Ok(request) = serde_json::from_value::<CaptureRequest>(value) else { break; };
                             if !request.valid_id() { break; }
                             let id = request.id().to_owned();
@@ -1054,7 +1149,36 @@ fn receive(value: Value, registry: &Registry, instance_id: &str, browser: &str) 
     let Some(client) = clients.get_mut(instance_id) else {
         return false;
     };
-    if value.get("action").and_then(Value::as_str) == Some("CONTAINERS_LIST") {
+    if value.get("action").and_then(Value::as_str) == Some("PUBLIC_TABS_RESULT") {
+        let Some(id) = value.get("id").and_then(Value::as_str) else {
+            return false;
+        };
+        let result = if value.get("ok").and_then(Value::as_bool) == Some(true) {
+            let Ok(tabs) = serde_json::from_value::<Vec<PublicTab>>(
+                value.get("tabs").cloned().unwrap_or(Value::Null),
+            ) else {
+                return false;
+            };
+            let mut ids = HashSet::new();
+            if tabs.len() > 200
+                || tabs.iter().any(|t| {
+                    !t.valid()
+                        || !ids.insert(t.id)
+                        || (t.container.is_some() && !matches!(browser, "firefox" | "mullvad"))
+                })
+            {
+                return false;
+            }
+            Ok(tabs)
+        } else if value.get("ok").and_then(Value::as_bool) == Some(false) {
+            Err("Could not read public tabs. Refresh the tab list.".into())
+        } else {
+            return false;
+        };
+        if let Some(sender) = client.public_pending.remove(id) {
+            let _ = sender.send(result);
+        }
+    } else if value.get("action").and_then(Value::as_str) == Some("CONTAINERS_LIST") {
         let Some(value) = value.get("containers") else {
             return false;
         };

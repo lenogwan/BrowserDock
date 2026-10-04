@@ -27,11 +27,12 @@ export async function build(output = root) {
   const common = {
     manifest_version: 3,
     name: 'BrowserDock Companion',
-    version: '1.0.13',
+    version: '1.1.0',
     description: 'Connect this browser to BrowserDock on your computer to focus or open tabs.',
     permissions: ['tabs', 'storage', 'alarms', 'tabGroups'],
     host_permissions: ['http://127.0.0.1/*'],
     incognito: 'spanning',
+    commands: { 'quick-save-tab': { suggested_key: { default: 'Alt+Shift+B' }, description: 'Save the current public tab to BrowserDock' } },
     options_ui: { page: 'options.html', open_in_tab: true },
     action: { default_title: 'Save this tab to BrowserDock', default_popup: 'capture.html' },
     content_security_policy: { extension_pages: "default-src 'self'; script-src 'self'; style-src 'self'; object-src 'none'; connect-src ws://127.0.0.1:*; base-uri 'none'; form-action 'none'" }

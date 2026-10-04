@@ -6,7 +6,7 @@
   import ShortcutRecorder from "./ShortcutRecorder.svelte";
   import { DOCK_SHORTCUTS, normalizeDockShortcuts, shortcutProblems } from './shortcuts.js';
   import { THEMES } from "./themes";
-  import type { ThemeId, Settings, Browser, Group, WindowSize, InstanceDigest } from "../../shared/types";
+  import type { ThemeId, Settings, Browser, Group, Bookmark, WindowSize, InstanceDigest } from "../../shared/types";
 
   type Tab = "appearance" | "behavior" | "shortcuts" | "browsers" | "companion" | "library";
   const TABS: { id: Tab; label: string }[] = [
@@ -20,7 +20,7 @@
   const TIMEOUT_PRESETS = [5, 15, 30, 60];
 
   let {
-    publicGroups = [], publicCount = 0, onlibrarychange, libraryBusy = $bindable(false),
+    publicGroups = [], publicBookmarks = [], publicCount = 0, onlibrarychange, libraryBusy = $bindable(false),
     settings,
     browsers = [],
     instances = [],
@@ -39,7 +39,7 @@
     onsizepreview,
     onsizecancel,
   }: {
-    publicGroups?: Group[]; publicCount?: number; onlibrarychange: () => Promise<void>; libraryBusy?: boolean;
+    publicGroups?: Group[]; publicBookmarks?: Bookmark[]; publicCount?: number; onlibrarychange: () => Promise<void>; libraryBusy?: boolean;
     settings: Settings;
     browsers?: Browser[];
     instances?: InstanceDigest[];
@@ -329,7 +329,7 @@
       <BrowserPanel {browsers} {instances} onsave={onbrowser} {onredetect} {onprofiles} />
     </div>
   {:else if tab === "library"}
-    <div class="tab-body" role="tabpanel" id="settings-panel" aria-labelledby={`settings-tab-${tab}`} tabindex="0"><PortableLibrary {browsers} groups={publicGroups} {publicCount} {native} onchange={onlibrarychange} bind:busy={libraryBusy} /></div>
+    <div class="tab-body" role="tabpanel" id="settings-panel" aria-labelledby={`settings-tab-${tab}`} tabindex="0"><PortableLibrary bookmarks={publicBookmarks} {browsers} groups={publicGroups} {publicCount} {native} onchange={onlibrarychange} bind:busy={libraryBusy} /></div>
   {:else}
     <div class="tab-body" role="tabpanel" id="settings-panel" aria-labelledby={`settings-tab-${tab}`} tabindex="0">
       <CompanionSetup {browsers} {instances} {reconnecting} {companionError} {native} onconfigure={() => tab = 'browsers'} />

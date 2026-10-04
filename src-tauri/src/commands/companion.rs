@@ -23,7 +23,12 @@ pub(crate) fn enable_capture(app: &tauri::AppHandle) {
             deadline,
         )?;
         drop(config);
-        if result.get("result").and_then(serde_json::Value::as_str) == Some("SAVED") {
+        if result.get("result").and_then(serde_json::Value::as_str) == Some("SAVED")
+            || result
+                .get("added")
+                .and_then(serde_json::Value::as_u64)
+                .is_some_and(|n| n > 0)
+        {
             let _ = app.emit("bookmarks-changed", ());
         }
         Ok(result)

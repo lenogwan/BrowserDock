@@ -432,6 +432,22 @@ function captureError(message, uncertain = false) {
   return Object.assign(new Error(message), { uncertain });
 }
 
+function captureTitle(tab) {
+  let title = '', bytes = 0;
+  for (const char of (tab.title?.trim() || new URL(tab.url).hostname)) {
+    bytes += encoder.encode(char).length;
+    if (bytes > 512) break;
+    title += char;
+  }
+  return title;
+}
+function tabContainer(tab, browser) {
+  return ['firefox', 'mullvad'].includes(browser) && typeof tab.cookieStoreId === 'string' && !['firefox-default', 'firefox-private'].includes(tab.cookieStoreId) ? tab.cookieStoreId : null;
+}
+function validBatchReply(payload) {
+  return payload?.result === 'BATCH_SAVED' && Number.isInteger(payload.added) && payload.added >= 0 && Number.isInteger(payload.duplicates) && payload.duplicates >= 0 && payload.added + payload.duplicates >= 1 && payload.added + payload.duplicates <= 50;
+}
+
 function installCapture(prototype) {
   prototype.captureRequest = function (ctx, action, payload = {}) {
     if (!this.current(ctx)) return Promise.reject(captureError('Connect this browser to BrowserDock first.'));
@@ -442,12 +458,12 @@ function installCapture(prototype) {
     return new Promise((resolve, reject) => {
       const timer = this.clock.setTimeout(() => {
         ctx.capturePending.delete(id);
-        reject(captureError(action === 'CAPTURE_SAVE' ? 'Save outcome unknown. Check BrowserDock before trying again.' : 'BrowserDock did not respond. Try refreshing.', action === 'CAPTURE_SAVE'));
+        reject(captureError(['CAPTURE_SAVE', 'CAPTURE_BATCH'].includes(action) ? 'Save outcome unknown. Check BrowserDock before trying again.' : 'BrowserDock did not respond. Try refreshing.', ['CAPTURE_SAVE', 'CAPTURE_BATCH'].includes(action)));
       }, 6000);
-      ctx.capturePending.set(id, { resolve, reject, timer, saving: action === 'CAPTURE_SAVE' });
+      ctx.capturePending.set(id, { resolve, reject, timer, saving: ['CAPTURE_SAVE', 'CAPTURE_BATCH'].includes(action), batch: action === 'CAPTURE_BATCH', batchCount: payload.items?.length });
       if (!this.send(ctx, { action, id, ...payload })) {
         this.clock.clearTimeout(timer); ctx.capturePending.delete(id);
-        reject(captureError('Connection lost. Check BrowserDock before trying again.', action === 'CAPTURE_SAVE'));
+        reject(captureError('Connection lost. Check BrowserDock before trying again.', ['CAPTURE_SAVE', 'CAPTURE_BATCH'].includes(action)));
       }
     });
   };
@@ -456,7 +472,7 @@ function installCapture(prototype) {
     const pending = ctx.capturePending.get(data.id);
     if (!pending) return;
     ctx.capturePending.delete(data.id); this.clock.clearTimeout(pending.timer);
-    if (data.ok === true && (!pending.saving || ['SAVED', 'ALREADY_SAVED'].includes(data.payload?.result))) {
+    if (data.ok === true && (!pending.saving || (pending.batch ? validBatchReply(data.payload) && data.payload.added + data.payload.duplicates === pending.batchCount : ['SAVED', 'ALREADY_SAVED'].includes(data.payload?.result)))) {
       pending.resolve(data.payload);
     } else if (data.ok === false && typeof data.error === 'string' && data.error.trim() && data.error.length <= 512 && (data.uncertain === undefined || typeof data.uncertain === 'boolean')) {
       pending.reject(captureError(data.error, data.uncertain === true));
@@ -468,9 +484,27 @@ function installCapture(prototype) {
   prototype.captureTab = async function (message) {
     const ctx = this.connection;
     if (!ctx || !this.current(ctx)) throw captureError('Connect this browser to BrowserDock first.');
+    if (message.type === 'BROWSERDOCK_CAPTURE_BATCH_SAVE') {
+      if (!ctx.captureBatch) throw captureError('Update BrowserDock to save several tabs.');
+      if (message.contextId !== ctx.captureContextId) throw captureError('Connection changed. Refresh before saving.');
+      if (!Array.isArray(message.items) || !message.items.length || message.items.length > 50) throw captureError('Select between 1 and 50 tabs.');
+      if (message.groupId !== null && (typeof message.groupId !== 'string' || !message.groupId || message.groupId.length > 128)) throw captureError('Choose an existing group.');
+      const items = [], ids = new Set();
+      for (const selected of message.items) {
+        if (!Number.isSafeInteger(selected.tabId) || ids.has(selected.tabId)) throw captureError('Invalid tab selection.');
+        ids.add(selected.tabId);
+        let tab;
+        try { tab = await this.api.tabs.get(selected.tabId); } catch { throw captureError('A selected tab closed. Refresh before saving.'); }
+        if (!this.current(ctx)) throw captureError('Connection changed. Refresh before saving.');
+        if (tab.incognito !== false || !safeUrl(tab.url) || selected.url !== tab.url) throw captureError('A selected tab changed or became private. Refresh before saving.');
+        if (typeof selected.title !== 'string' || !selected.title.trim() || encoder.encode(selected.title.trim()).length > 512) throw captureError('Enter titles up to 512 bytes.');
+        items.push({ id:this.uuid(), title:selected.title.trim(), url:tab.url, container:tabContainer(tab, ctx.pairing.browser) });
+      }
+      return this.captureRequest(ctx, 'CAPTURE_BATCH', {group_id:message.groupId, items});
+    }
     let tab;
     try {
-      tab = message.type === 'BROWSERDOCK_CAPTURE_CONTEXT'
+      tab = ['BROWSERDOCK_CAPTURE_CONTEXT', 'BROWSERDOCK_CAPTURE_BATCH_CONTEXT'].includes(message.type)
         ? (await this.api.tabs.query({ active: true, currentWindow: true }))[0]
         : await this.api.tabs.get(message.tabId);
     } catch { throw captureError('This tab is no longer available. Reopen the popup.'); }
@@ -478,26 +512,75 @@ function installCapture(prototype) {
     if (!tab || !Number.isSafeInteger(tab.id)) throw captureError('No active browser tab is available.');
     if (tab.incognito) throw captureError('Private-window tabs cannot be saved to public bookmarks. Use BrowserDock’s vault.');
     if (!safeUrl(tab.url)) throw captureError('Only HTTP(S) pages with URLs up to 2 KB can be captured.');
-    if (message.type === 'BROWSERDOCK_CAPTURE_CONTEXT') {
+    if (['BROWSERDOCK_CAPTURE_CONTEXT', 'BROWSERDOCK_CAPTURE_BATCH_CONTEXT'].includes(message.type)) {
       const response = await this.captureRequest(ctx, 'CAPTURE_GROUPS');
       if (!this.current(ctx)) throw captureError('Connection changed. Reopen the popup.');
       ctx.captureContextId ??= this.uuid();
       if (!Array.isArray(response?.groups) || response.groups.length > 50 || response.groups.some(group => typeof group.id !== 'string' || group.id.length > 128 || typeof group.name !== 'string' || [...group.name].length > 64)) throw captureError('BrowserDock returned an invalid group list.');
-      let title = '', bytes = 0;
-      for (const char of (tab.title?.trim() || new URL(tab.url).hostname)) {
-        bytes += encoder.encode(char).length;
-        if (bytes > 512) break;
-        title += char;
+      if (message.type === 'BROWSERDOCK_CAPTURE_BATCH_CONTEXT') {
+        if (!ctx.captureBatch) throw captureError('Update BrowserDock to save several tabs.');
+        const tabs = await this.api.tabs.query({ currentWindow:true });
+        if (!this.current(ctx)) throw captureError('Connection changed. Refresh before saving.');
+        const eligible = tabs.filter(t => t.incognito === false && Number.isSafeInteger(t.id) && safeUrl(t.url));
+        return {contextId:ctx.captureContextId, browser:ctx.pairing.browser, groups:response.groups, tabs:eligible.slice(0, 200).map(t => ({tabId:t.id, title:captureTitle(t), url:t.url})), total:eligible.length};
       }
-      return { contextId: ctx.captureContextId, tabId: tab.id, url: tab.url, title, browser: ctx.pairing.browser, groups: response.groups };
+      return { contextId: ctx.captureContextId, tabId: tab.id, url: tab.url, title:captureTitle(tab), browser:ctx.pairing.browser, groups:response.groups };
     }
     if (message.url !== tab.url) throw captureError('The tab navigated to another page. Reopen the popup before saving.');
     if (typeof message.contextId !== 'string' || message.contextId !== ctx.captureContextId) throw captureError('Connection changed. Refresh the popup before saving.');
     if (typeof message.title !== 'string' || !message.title.trim() || encoder.encode(message.title.trim()).length > 512) throw captureError('Enter a title up to 512 bytes.');
     if (message.groupId !== null && (typeof message.groupId !== 'string' || !message.groupId || message.groupId.length > 128)) throw captureError('Choose an existing group.');
-    const container = ['firefox', 'mullvad'].includes(ctx.pairing.browser) && typeof tab.cookieStoreId === 'string' && !['firefox-default', 'firefox-private'].includes(tab.cookieStoreId) ? tab.cookieStoreId : null;
+    const container = tabContainer(tab, ctx.pairing.browser);
     return this.captureRequest(ctx, 'CAPTURE_SAVE', { title: message.title.trim(), url: tab.url, group_id: message.groupId, incognito: false, container });
   };
+  prototype.readPublicTabs = async function (ctx, request) {
+    if (typeof request.id !== 'string' || !request.id || request.id.length > 128) return;
+    if (ctx.publicReviewBusy) { this.send(ctx, {action:'PUBLIC_TABS_RESULT',id:request.id,ok:false}); return; }
+    ctx.publicReviewBusy = request.id;
+    const timer = this.clock.setTimeout(() => {
+      if (ctx.publicReviewBusy !== request.id) return;
+      ctx.publicReviewBusy = null;
+      if (this.current(ctx)) this.send(ctx, {action:'PUBLIC_TABS_RESULT', id:request.id, ok:false});
+    }, 5000);
+    try {
+      const tabs = await this.api.tabs.query({});
+      if (!this.current(ctx) || ctx.publicReviewBusy !== request.id) return;
+      const result = tabs.filter(t => t.incognito === false && Number.isSafeInteger(t.id) && safeUrl(t.url)).slice(0,200)
+        .map(t => ({id:t.id, title:captureTitle(t), url:t.url, container:tabContainer(t,ctx.pairing.browser), incognito:false}));
+      this.send(ctx, {action:'PUBLIC_TABS_RESULT', id:request.id, ok:true, tabs:result});
+    } catch { if (this.current(ctx) && ctx.publicReviewBusy === request.id) this.send(ctx, {action:'PUBLIC_TABS_RESULT', id:request.id, ok:false}); }
+    finally { this.clock.clearTimeout(timer); if (ctx.publicReviewBusy === request.id) ctx.publicReviewBusy = null; }
+  };
+
+  prototype.quickSave = async function () {
+    if (this.quickSaving || this.quickSaveUncertain) return;
+    this.quickSaving = true;
+    this.clock.clearTimeout(this.quickBadgeTimer);
+    const ctx = this.connection;
+    const badge = (text, title) => {
+      const action = this.api.action;
+      void Promise.resolve(action?.setBadgeText({text})).catch(()=>{});
+      void Promise.resolve(action?.setTitle({title})).catch(()=>{});
+    };
+    try {
+      const draft = await this.captureTab({type:'BROWSERDOCK_CAPTURE_CONTEXT'});
+      let preferences, timer;
+      try {
+        const data = await Promise.race([this.api.storage.local.get('capturePreferences'), new Promise(resolve => { timer = this.clock.setTimeout(() => resolve(null), 1000); })]);
+        preferences = data?.capturePreferences;
+      } catch {} finally { this.clock.clearTimeout(timer); }
+      if (!this.current(ctx)) throw captureError('Connection changed.');
+      const groupId = draft.groups.some(g => g.id === preferences?.groupId) ? preferences.groupId : null;
+      const result = await this.captureTab({type:'BROWSERDOCK_CAPTURE_SAVE', ...draft, groupId});
+      badge(result.result === 'ALREADY_SAVED' ? 'Same' : 'Saved', result.result === 'ALREADY_SAVED' ? 'Already saved in BrowserDock' : 'Saved to BrowserDock');
+      this.clock.clearTimeout(this.quickBadgeTimer);
+      this.quickBadgeTimer = this.clock.setTimeout(() => badge('', 'Save this tab to BrowserDock'), 5000);
+    } catch (error) {
+      this.quickSaveUncertain = error.uncertain === true;
+      badge(this.quickSaveUncertain ? '?' : '!', this.quickSaveUncertain ? 'Save outcome unknown. Check BrowserDock; reopen the popup to acknowledge.' : error.message);
+    } finally { this.quickSaving = false; }
+  };
+
 }
 
 
@@ -536,11 +619,16 @@ class Companion {
     });
     this.api.runtime.onMessage?.addListener((message, sender, reply) => {
       if (message?.type === 'BROWSERDOCK_STATUS' && sender.id === this.api.runtime.id) reply({ state: this.status, diagnostics: this.diagnostics });
-      if (['BROWSERDOCK_CAPTURE_CONTEXT', 'BROWSERDOCK_CAPTURE_SAVE'].includes(message?.type) && sender.id === this.api.runtime.id && sender.url === this.api.runtime.getURL('capture.html')) {
+      if (['BROWSERDOCK_QUICK_STATUS', 'BROWSERDOCK_QUICK_ACK'].includes(message?.type) && sender.id === this.api.runtime.id && sender.url === this.api.runtime.getURL('capture.html')) {
+        if (message?.type === 'BROWSERDOCK_QUICK_STATUS') reply({blocked:this.quickSaveUncertain === true});
+        if (message?.type === 'BROWSERDOCK_QUICK_ACK') { this.quickSaveUncertain = false; void Promise.resolve(this.api.action?.setBadgeText({text:''})).catch(()=>{}); void Promise.resolve(this.api.action?.setTitle({title:'Save this tab to BrowserDock'})).catch(()=>{}); reply({ok:true}); }
+      }
+      if (['BROWSERDOCK_CAPTURE_CONTEXT', 'BROWSERDOCK_CAPTURE_SAVE', 'BROWSERDOCK_CAPTURE_BATCH_CONTEXT', 'BROWSERDOCK_CAPTURE_BATCH_SAVE'].includes(message?.type) && sender.id === this.api.runtime.id && sender.url === this.api.runtime.getURL('capture.html')) {
         this.captureTab(message).then(payload => reply({ ok: true, payload }), error => reply({ ok: false, error: error.message, uncertain: error.uncertain === true }));
         return true;
       }
     });
+    this.api.commands?.onCommand?.addListener(command => { if (command === 'quick-save-tab') void this.quickSave(); });
     this.api.alarms.onAlarm.addListener(alarm => {
       if (alarm.name === 'browserdock-reconnect') { this.maintainConnection(); this.scheduleSync(); }
     });
@@ -654,7 +742,7 @@ class Companion {
     socket.onopen = () => {
       if (this.connection !== ctx) return;
       this.status = 'authenticating';
-      this.send(ctx, { type: 'AUTH', token: ctx.pairing.token, browser: ctx.pairing.browser, instance_id: this.uuid(), capabilities: ['tab_groups_v1'] });
+      this.send(ctx, { type: 'AUTH', token: ctx.pairing.token, browser: ctx.pairing.browser, instance_id: this.uuid(), capabilities: ['tab_groups_v1', 'public_tabs_v1'] });
     };
     socket.onmessage = event => this.receive(ctx, event.data);
     socket.onerror = () => this.drop(ctx, 'socket_error');
@@ -718,6 +806,7 @@ class Companion {
         ctx.authenticated = true; ctx.authenticatedAt = this.clock.now(); ctx.pong = this.clock.now(); this.clock.clearTimeout(ctx.authTimer);
         ctx.paged = Array.isArray(data.capabilities) && data.capabilities.includes('paged_tabs_v1');
         ctx.capture = Array.isArray(data.capabilities) && data.capabilities.includes('capture_public_v1');
+        ctx.captureBatch = Array.isArray(data.capabilities) && data.capabilities.includes('capture_batch_v1');
         this.status = 'connected';
         this.record('connected', this.outageStarted === null ? undefined : this.clock.now() - this.outageStarted);
         this.outageStarted = null;
@@ -725,6 +814,7 @@ class Companion {
       }
       return;
     }
+    if (data.action === 'LIST_PUBLIC_TABS') { void this.readPublicTabs(ctx, data); return; }
     if (data.action === 'CAPTURE_RESULT') { this.captureReply(ctx, data); return; }
     if (data.action === 'CANCEL_REQUEST') { if (ctx.seen.has(data.id) && ctx.seen.get(data.id) === null) ctx.cancelled.add(data.id); return; }
     if (data.action === 'CONTAINERS_LIST') { void this.syncContainers(ctx); return; }

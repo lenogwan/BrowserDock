@@ -12,6 +12,12 @@ use zeroize::Zeroize;
 #[derive(Deserialize)]
 #[serde(tag = "action", deny_unknown_fields)]
 pub enum CaptureRequest {
+    #[serde(rename = "CAPTURE_BATCH")]
+    Batch {
+        id: String,
+        group_id: Option<String>,
+        items: Vec<CaptureItem>,
+    },
     #[serde(rename = "CAPTURE_GROUPS")]
     Groups { id: String },
     #[serde(rename = "CAPTURE_SAVE")]
@@ -27,7 +33,7 @@ pub enum CaptureRequest {
 impl CaptureRequest {
     pub fn id(&self) -> &str {
         match self {
-            Self::Groups { id } | Self::Save { id, .. } => id,
+            Self::Groups { id } | Self::Save { id, .. } | Self::Batch { id, .. } => id,
         }
     }
     pub fn valid_id(&self) -> bool {
@@ -39,6 +45,15 @@ impl Drop for CaptureRequest {
     fn drop(&mut self) {
         match self {
             Self::Groups { id } => id.zeroize(),
+            Self::Batch {
+                id,
+                group_id,
+                items,
+            } => {
+                id.zeroize();
+                group_id.zeroize();
+                items.clear();
+            }
             Self::Save {
                 id,
                 title,
@@ -54,6 +69,23 @@ impl Drop for CaptureRequest {
                 container.zeroize();
             }
         }
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CaptureItem {
+    pub id: String,
+    pub title: String,
+    pub url: String,
+    pub container: Option<String>,
+}
+impl Drop for CaptureItem {
+    fn drop(&mut self) {
+        self.id.zeroize();
+        self.title.zeroize();
+        self.url.zeroize();
+        self.container.zeroize();
     }
 }
 
@@ -81,6 +113,67 @@ pub fn capture_public(
     {
         return Err("Choose a configured browser in BrowserDock".into());
     }
+    if let CaptureRequest::Batch {
+        group_id, items, ..
+    } = request
+    {
+        if items.is_empty() || items.len() > 50 {
+            return Err("Select between 1 and 50 tabs".into());
+        }
+        let mut next = config.clone();
+        let (mut added, mut duplicates) = (0, 0);
+        let mut ids = std::collections::HashSet::new();
+        for item in items {
+            if !ids.insert(&item.id) {
+                return Err("Duplicate capture ID".into());
+            }
+            let single = CaptureRequest::Save {
+                id: item.id.clone(),
+                title: item.title.clone(),
+                url: item.url.clone(),
+                group_id: group_id.clone(),
+                incognito: false,
+                container: item.container.clone(),
+            };
+            let (prepared, result) = prepare_public(&next, browser, &single)?;
+            next = prepared;
+            if result["result"] == "SAVED" {
+                added += 1;
+            } else {
+                duplicates += 1;
+            }
+        }
+        if Instant::now() >= deadline {
+            return Err("Capture expired. Refresh before saving.".into());
+        }
+        if added > 0 {
+            next.save(path).map_err(|_| {
+                "Could not save bookmarks. Check BrowserDock's configuration storage."
+            })?;
+            *config = next;
+        }
+        return Ok(json!({"result":"BATCH_SAVED", "added":added, "duplicates":duplicates}));
+    }
+    let (next, result) = prepare_public(config, browser, request)?;
+    if result["result"] == "SAVED" {
+        if Instant::now() >= deadline {
+            return Err("Capture expired. Reopen the popup.".into());
+        }
+        next.save(path)
+            .map_err(|_| "Could not save bookmark. Check BrowserDock's configuration storage.")?;
+        *config = next;
+    }
+    Ok(result)
+}
+
+fn prepare_public(
+    config: &Config,
+    browser: &str,
+    request: &CaptureRequest,
+) -> Result<(Config, Value), String> {
+    if !request.valid_id() {
+        return Err("Invalid capture request".into());
+    }
     let CaptureRequest::Save {
         id,
         title,
@@ -92,9 +185,10 @@ pub fn capture_public(
     else {
         let mut groups = config.groups.iter().collect::<Vec<_>>();
         groups.sort_by_key(|group| (group.sort_order, group.id.as_str()));
-        return Ok(
+        return Ok((
+            config.clone(),
             json!({"groups": groups.iter().map(|group| json!({"id":group.id,"name":group.name})).collect::<Vec<_>>()}),
-        );
+        ));
     };
     if *incognito {
         return Err(
@@ -151,13 +245,13 @@ pub fn capture_public(
     };
     if let Some(existing) = bookmarks.iter().find(|existing| existing.id == *id) {
         return if same_destination(existing) {
-            Ok(json!({"result":"ALREADY_SAVED"}))
+            Ok((config.clone(), json!({"result":"ALREADY_SAVED"})))
         } else {
             Err("Capture ID is already used. No bookmark was changed.".into())
         };
     }
     if bookmarks.iter().any(same_destination) {
-        return Ok(json!({"result":"ALREADY_SAVED"}));
+        return Ok((config.clone(), json!({"result":"ALREADY_SAVED"})));
     }
     if config
         .bookmarks
@@ -185,11 +279,5 @@ pub fn capture_public(
     next.bookmarks
         .push(serde_json::to_value(saved).map_err(|_| "Cannot prepare bookmark")?);
     groups::patch_organization(&mut next.bookmarks, &bookmarks);
-    if Instant::now() >= deadline {
-        return Err("Capture expired. Reopen the popup.".into());
-    }
-    next.save(path)
-        .map_err(|_| "Could not save bookmark. Check BrowserDock's configuration storage.")?;
-    *config = next;
-    Ok(json!({"result":"SAVED"}))
+    Ok((next, json!({"result":"SAVED"})))
 }

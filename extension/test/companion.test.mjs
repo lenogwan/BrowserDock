@@ -37,7 +37,7 @@ test('inventory excludes private and unsafe tabs and bounds UTF8 URLs and Unicod
 });
 test('auth precedes inventory and all browser actions', async () => {
   const f = fixture(); const s = await f.start();
-  assert.deepEqual(s.sent, [{ type: 'AUTH', token: pairing.token, browser: 'mullvad', instance_id: 'e8d741e8-460a-42bb-aea9-27d54a8e8542', capabilities: ['tab_groups_v1'] }]);
+  assert.deepEqual(s.sent, [{ type: 'AUTH', token: pairing.token, browser: 'mullvad', instance_id: 'e8d741e8-460a-42bb-aea9-27d54a8e8542', capabilities: ['tab_groups_v1', 'public_tabs_v1'] }]);
   s.message({ id: 'a', action: 'FOCUS_OR_OPEN', url: 'https://example.com', match_mode: 'new_tab' }); await f.tick(1000);
   assert.equal(f.calls.length, 0); assert.equal(s.sent.length, 1);
 });
@@ -514,7 +514,7 @@ test('default clock invokes timers on the global scope (Firefox strict receiver)
     const c = new Companion(f.api, url => { const s = { url, readyState: 0, sent: [], send(v) { this.sent.push(JSON.parse(v)); }, close() {}, open() { this.readyState = 1; this.onopen(); } }; f.sockets.push(s); return s; }, undefined, () => 'e8d741e8-460a-42bb-aea9-27d54a8e8542');
     await c.start(); f.sockets[0].open(); await flush();
     assert.equal(f.sockets.length, 1);
-    assert.deepEqual(f.sockets[0].sent, [{ type: 'AUTH', token: pairing.token, browser: 'mullvad', instance_id: 'e8d741e8-460a-42bb-aea9-27d54a8e8542', capabilities: ['tab_groups_v1'] }]);
+    assert.deepEqual(f.sockets[0].sent, [{ type: 'AUTH', token: pairing.token, browser: 'mullvad', instance_id: 'e8d741e8-460a-42bb-aea9-27d54a8e8542', capabilities: ['tab_groups_v1', 'public_tabs_v1'] }]);
     c.disconnect();
   } finally {
     globalThis.setTimeout = realSetTimeout; globalThis.clearTimeout = realClearTimeout;
@@ -978,4 +978,70 @@ test('only the extension capture popup can request a capture', async () => {
   assert.equal(captures, 0);
   assert.equal(listener(message, { id: 'companion', url: f.api.runtime.getURL('capture.html') }, value => { response = value; }), true);
   await flush(); assert.equal(captures, 1); assert.equal(response.ok, true);
+});
+
+test('fresh public tab reviews exclude private opt-in data and oversized URLs without truncation', async () => {
+  const f = fixture([tab(1,'https://a.test/',{cookieStoreId:'firefox-container-1',title:'😀'.repeat(300)}),tab(2,'https://secret.test/',{incognito:true}),tab(3,'https://a.test/'+ 'x'.repeat(2048)),tab(4,'file:///a')]);
+  const s = await f.auth(); f.c.connection.pairing.includePrivate = true;
+  s.message({action:'LIST_PUBLIC_TABS',id:'review'}); await flush();
+  const reply=s.sent.find(m=>m.action==='PUBLIC_TABS_RESULT'); assert.equal(reply.ok,true); assert.equal(reply.tabs.length,1); assert.equal(reply.tabs[0].incognito,false); assert.equal(reply.tabs[0].container,'firefox-container-1'); assert.equal(new TextEncoder().encode(reply.tabs[0].title).length,512); assert.equal(f.calls.length,0);
+});
+test('a timed-out public review cannot answer a later request or block future reviews', async () => {
+  const f=fixture(); const s=await f.auth(); let finish;
+  f.api.tabs.query=()=>new Promise(resolve=>finish=resolve);
+  s.message({action:'LIST_PUBLIC_TABS',id:'slow'}); await flush(); await f.tick(5000);
+  assert.deepEqual(s.sent.find(m=>m.action==='PUBLIC_TABS_RESULT'),{action:'PUBLIC_TABS_RESULT',id:'slow',ok:false});
+  f.api.tabs.query=async()=>[tab(1,'https://fresh.test/')]; s.message({action:'LIST_PUBLIC_TABS',id:'fresh'}); await flush(); finish([tab(2,'https://stale.test/')]); await flush();
+  const replies=s.sent.filter(m=>m.action==='PUBLIC_TABS_RESULT'); assert.equal(replies.length,2); assert.equal(replies[1].id,'fresh'); assert.equal(replies[1].tabs[0].url,'https://fresh.test/');
+});
+test('batch capture rechecks every tab before sending and preserves public container identity', async () => {
+  const tabs=[tab(1,'https://a.test/',{cookieStoreId:'firefox-container-1'}),tab(2,'https://b.test/'),tab(3,'https://private.test/',{incognito:true})];
+  const f=fixture(tabs); const s=await f.start(); s.message({type:'AUTH_OK',capabilities:['capture_public_v1','capture_batch_v1']}); await flush(); f.c.uuid=()=>crypto.randomUUID();
+  const requests=[]; f.c.captureRequest=async(_ctx,action,payload)=>{ requests.push({action,payload}); return action==='CAPTURE_GROUPS'?{groups:[]}:{result:'BATCH_SAVED',added:2,duplicates:0}; };
+  f.api.tabs.get=async id=>tabs.find(t=>t.id===id);
+  const draft=await f.c.captureTab({type:'BROWSERDOCK_CAPTURE_BATCH_CONTEXT'}); assert.equal(draft.tabs.length,2);
+  const message={type:'BROWSERDOCK_CAPTURE_BATCH_SAVE',contextId:draft.contextId,groupId:null,items:draft.tabs};
+  assert.equal((await f.c.captureTab(message)).added,2); assert.equal(requests[1].action,'CAPTURE_BATCH'); assert.equal(requests[1].payload.items[0].container,'firefox-container-1');
+  requests.length=0; tabs[1].incognito=true;
+  await assert.rejects(f.c.captureTab(message),/became private/); assert.equal(requests.length,0);
+  tabs[1].incognito=false; tabs[1].url='https://changed.test/'; await assert.rejects(f.c.captureTab(message),/changed/); assert.equal(requests.length,0);
+  await assert.rejects(f.c.captureTab({...message,contextId:'obsolete'}),/Connection changed/);
+  await assert.rejects(f.c.captureTab({...message,items:Array(51).fill(message.items[0])}),/1 and 50/);
+});
+test('uncertain batch replies cannot become successful saves', async () => {
+  const f=fixture(); const s=await f.start(); s.message({type:'AUTH_OK',capabilities:['capture_public_v1','capture_batch_v1']}); await flush();
+  const promise=f.c.captureRequest(f.c.connection,'CAPTURE_BATCH',{}).catch(e=>e); const request=s.sent.at(-1);
+  s.message({action:'CAPTURE_RESULT',id:request.id,ok:true,payload:{result:'BATCH_SAVED',added:2,duplicates:-1}});
+  assert.equal((await promise).uncertain,true);
+});
+test('quick-save shortcut uses the last valid group, suppresses overlap and blocks unknown-outcome retries', async () => {
+  const f=fixture(); await f.auth(); const requests=[];
+  f.api.storage.local.get=async()=>({capturePreferences:{groupId:'work'}});
+  let finish; f.c.captureTab=async message=>{ requests.push(message); return message.type==='BROWSERDOCK_CAPTURE_CONTEXT'?{contextId:'context',tabId:1,url:'https://a.test/',title:'A',groups:[{id:'work'}]}:new Promise(resolve=>finish=resolve); };
+  const saving=f.c.quickSave(); await flush(); await f.c.quickSave(); assert.equal(requests.length,2); assert.equal(requests[1].groupId,'work'); finish({result:'SAVED'}); await saving;
+  f.c.captureTab=async()=>{throw Object.assign(Error('unknown'),{uncertain:true});}; await f.c.quickSave(); assert.equal(f.c.quickSaveUncertain,true);
+  f.c.captureTab=async()=>{requests.push({unexpected:true});}; await f.c.quickSave(); assert.equal(requests.length,2);
+});
+
+test('batch save replies must account for exactly the requested selection', async () => {
+  for (const counts of [{added:1,duplicates:1},{added:1,duplicates:0}]) {
+    const f=fixture();const s=await f.start();s.message({type:'AUTH_OK',capabilities:['capture_public_v1','capture_batch_v1']});await flush();
+    const saving=f.c.captureRequest(f.c.connection,'CAPTURE_BATCH',{items:[{},{}]}).catch(e=>e);const request=s.sent.at(-1);
+    s.message({action:'CAPTURE_RESULT',id:request.id,ok:true,payload:{result:'BATCH_SAVED',...counts}});
+    const result=await saving;
+    if(counts.duplicates===1)assert.equal(result.result,'BATCH_SAVED');else assert.equal(result.uncertain,true);
+  }
+});
+
+test('batch capture and unknown-outcome acknowledgement are restricted to the own popup', async () => {
+  const f=fixture();let listener;
+  f.api.runtime.id='extension-id';f.api.runtime.getURL=path=>`moz-extension://local/${path}`;f.api.runtime.onMessage={addListener(fn){listener=fn;}};
+  await f.auth();f.c.quickSaveUncertain=true;let captures=0;f.c.captureTab=async()=>{captures++;return {};};const replies=[];
+  for(const sender of [{id:'other',url:'moz-extension://local/capture.html'},{id:'extension-id',url:'https://evil.test/'},{id:'extension-id',url:'moz-extension://local/options.html'}]) {
+    listener({type:'BROWSERDOCK_QUICK_ACK'},sender,value=>replies.push(value));listener({type:'BROWSERDOCK_CAPTURE_BATCH_CONTEXT'},sender,value=>replies.push(value));
+  }
+  assert.equal(f.c.quickSaveUncertain,true);assert.equal(captures,0);assert.equal(replies.length,0);
+  const sender={id:'extension-id',url:'moz-extension://local/capture.html'};
+  listener({type:'BROWSERDOCK_QUICK_ACK'},sender,value=>replies.push(value));assert.equal(f.c.quickSaveUncertain,false);
+  listener({type:'BROWSERDOCK_CAPTURE_BATCH_CONTEXT'},sender,value=>replies.push(value));await flush();assert.equal(captures,1);assert.equal(replies.length,2);
 });

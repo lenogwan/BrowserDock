@@ -133,3 +133,93 @@ pub async fn backup_restore(
     .await
     .map_err(|_| "Restore task failed")?
 }
+
+#[tauri::command]
+pub(crate) fn library_inspect(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, crate::LauncherState>,
+) -> Result<Vec<browserdock_launcher::library_tools::LibraryIssue>, String> {
+    let config = crate::current_config(&app)?;
+    let instances = state
+        .companion
+        .as_ref()
+        .map(|s| s.tabs_digest())
+        .unwrap_or_default();
+    Ok(browserdock_launcher::library_tools::inspect(
+        &config, &instances,
+    ))
+}
+#[tauri::command]
+pub(crate) async fn library_cleanup(
+    app: tauri::AppHandle,
+    selections: Vec<browserdock_launcher::library_tools::CleanupSelection>,
+) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app
+            .try_state::<DesktopState>()
+            .ok_or("Configuration unavailable")?;
+        let mut config = state
+            .config
+            .lock()
+            .map_err(|_| "Configuration unavailable")?;
+        let next = browserdock_launcher::library_tools::prepare_cleanup(&config, &selections)?;
+        let mut history = state.history.lock().map_err(|_| "Undo unavailable")?;
+        next.save(&state.path)?;
+        *config = next;
+        history.clear();
+        let _ = app.emit("bookmarks-changed", ());
+        Ok(())
+    })
+    .await
+    .map_err(|_| "Cleanup task failed")?
+}
+#[tauri::command]
+pub(crate) async fn workspace_tabs(
+    state: tauri::State<'_, crate::LauncherState>,
+) -> Result<Vec<browserdock_launcher::ws_server::PublicTabs>, String> {
+    state
+        .companion
+        .as_ref()
+        .map_err(Clone::clone)?
+        .all_public_tabs()
+        .await
+}
+#[derive(Serialize)]
+pub struct WorkspaceSaved {
+    pub group_id: String,
+    pub added: usize,
+}
+#[tauri::command]
+pub(crate) async fn workspace_save(
+    app: tauri::AppHandle,
+    name: String,
+    selected: Vec<browserdock_launcher::library_tools::TabSelection>,
+    state: tauri::State<'_, crate::LauncherState>,
+) -> Result<WorkspaceSaved, String> {
+    if selected.is_empty() || selected.len() > 50 {
+        return Err("Select between 1 and 50 public tabs".into());
+    }
+    let server = state.companion.as_ref().map_err(Clone::clone)?;
+    let ids: std::collections::HashSet<_> =
+        selected.iter().map(|s| s.instance_id.as_str()).collect();
+    let ids: Vec<String> = ids.into_iter().map(str::to_owned).collect();
+    let fresh = server.public_tabs_for(&ids).await?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app
+            .try_state::<DesktopState>()
+            .ok_or("Configuration unavailable")?;
+        let mut config = state
+            .config
+            .lock()
+            .map_err(|_| "Configuration unavailable")?;
+        let (next, group_id, added) = browserdock_launcher::library_tools::prepare_workspace(
+            &config, &name, &selected, &fresh,
+        )?;
+        next.save(&state.path)?;
+        *config = next;
+        let _ = app.emit("bookmarks-changed", ());
+        Ok(WorkspaceSaved { group_id, added })
+    })
+    .await
+    .map_err(|_| "Workspace task failed")?
+}

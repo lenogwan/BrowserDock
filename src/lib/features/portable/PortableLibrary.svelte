@@ -2,10 +2,12 @@
   import { onDestroy, tick } from 'svelte';
   import { revealItemInDir } from '@tauri-apps/plugin-opener';
   import { invokeCommand, type ImportItem, type ImportSummary, type BackupPreview } from '../../platform/tauri/commands';
-  import type { Browser, Group } from '../../shared/types';
+  import type { Browser, Group, Bookmark } from '../../shared/types';
+  import LibraryMaintenance from './LibraryMaintenance.svelte';
+  import WorkspaceSnapshots from './WorkspaceSnapshots.svelte';
   import { parseBookmarkHtml } from './import.js';
-  let { browsers, groups, publicCount, native, onchange, busy = $bindable(false) }: {
-    browsers: Browser[]; groups: Group[]; publicCount: number; native: boolean;
+  let { browsers, groups, bookmarks = [], publicCount, native, onchange, busy = $bindable(false) }: {
+    browsers: Browser[]; groups: Group[]; bookmarks?: Bookmark[]; publicCount: number; native: boolean;
     onchange: () => Promise<void>; busy?: boolean;
   } = $props();
   let items = $state<ImportItem[]>([]), rejected = $state(0), browserId = $state('firefox'), groupId = $state(''), folders = $state(true);
@@ -94,7 +96,7 @@
   }
 </script>
 <div class="portable" aria-busy={busy}>
-  <p class="intro">Bring bookmarks in, keep a local backup, or restore a saved library.</p>
+  <p class="intro">Save a workspace, tidy public bookmarks, import links, or keep a local backup.</p>
   {#if busy || error || message}
     <div class="feedback" tabindex="-1" bind:this={feedback}>
       {#if busy}<p role="status">{active} Keep this view open until it finishes.</p>{/if}
@@ -102,6 +104,8 @@
       {#if message}<p class="notice" role="status">{message}</p>{/if}
     </div>
   {/if}
+  <WorkspaceSnapshots {native} {groups} {bookmarks} {browsers} {onchange} bind:busy />
+  <LibraryMaintenance {native} {onchange} bind:busy />
   <section aria-labelledby="library-import" class="library-card">
     <h2 id="library-import">Import browser bookmarks</h2>
     <p>Add bookmarks to your public library. Your existing bookmarks stay in place.</p>

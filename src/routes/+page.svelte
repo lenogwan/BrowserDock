@@ -37,6 +37,7 @@
   import { buildTree, visibleTree } from "$lib/features/bookmarks/trees.js";
   import { groupSections } from "$lib/features/bookmarks/groups.js";
   import { entryKey } from "$lib/features/bookmarks/ids.js";
+  import RoutingExplanation from "$lib/features/bookmarks/RoutingExplanation.svelte";
   import BookmarkEditor from "$lib/features/bookmarks/BookmarkEditor.svelte";
   import { searchBookmarks, directUrl, buildOpenTabIndex, isTabOpen, rankResults } from "$lib/features/bookmarks/search.js";
   import { normalizeDockShortcuts, dockShortcutAction, shortcutFromEvent, canonicalShortcut } from '$lib/features/settings/shortcuts.js';
@@ -917,6 +918,7 @@
               />{/key}
           {:else if view === "settings"}<SettingsView
               publicGroups={bookmarkController.groups}
+              publicBookmarks={bookmarkController.bookmarks}
               publicCount={bookmarkController.bookmarks.length}
               bind:libraryBusy
               onlibrarychange={async () => { bookmarkController.publicUndo = false; bookmarkController.cancelSelection(); await loadPublic(true); }}
@@ -1051,7 +1053,7 @@
           </div>
             {#if previewUrl}<div class="launch-preview" id="enter-preview" role="status" title={`${enterPreview?.text ?? 'Checking destination…'}. ${enterPreview?.note ?? 'The destination is resolved using the same settings as launch.'}`}>
               <ArrowUpRight size={12} aria-hidden="true" /><span>{!windowController.native ? 'Open the desktop app to launch' : enterPreview?.text ?? (routeFailed === previewKey ? 'Destination preview unavailable' : 'Checking destination…')}</span>
-            </div>{/if}
+            </div>{#if windowController.native}{#key previewKey}<RoutingExplanation url={previewUrl} browserId={override} bookmarkId={selectedBookmark?.id ?? null} bookmarkPrivate={!!selectedBookmark?.private} />{/key}{/if}{/if}
         </footer>
       </div>
     {/if}

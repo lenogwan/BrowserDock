@@ -3,13 +3,13 @@ import assert from 'node:assert/strict';
 import vm from 'node:vm';
 import { readFile } from 'node:fs/promises';
 
-async function popup(saveResponse) {
+async function popup(saveResponse, storage) {
   const ids = ['capture-form', 'title', 'group', 'save', 'refresh', 'status', 'page-url', 'target', 'settings'];
   const nodes = Object.fromEntries(ids.map(id => [id, { value: '', textContent: '', disabled: false, handlers: {}, options: [], addEventListener(name, fn) { this.handlers[name] = fn; }, replaceChildren(...values) { this.options = values; }, add(value) { this.options.push(value); } }]));
   const calls = [];
   const runtime = { async sendMessage(message) { calls.push(message); return message.type === 'BROWSERDOCK_CAPTURE_CONTEXT' ? { ok: true, payload: { contextId: 'capture-context', tabId: 1, title: '<script>Example</script>', url: 'https://example.com/', browser: 'firefox', groups: [{ id: 'work', name: '<b>Work</b>' }] } } : typeof saveResponse === 'function' ? saveResponse() : saveResponse; }, async openOptionsPage() {} };
   function Option(text, value) { this.text = text; this.value = value; }
-  new vm.Script(await readFile(new URL('../src/capture-popup.js', import.meta.url), 'utf8')).runInContext(vm.createContext({ Option, document: { getElementById: id => nodes[id] }, browser: { runtime } }));
+  new vm.Script(await readFile(new URL('../src/capture-popup.js', import.meta.url), 'utf8')).runInContext(vm.createContext({ Option, document: { getElementById: id => nodes[id] }, browser: { runtime, storage } }));
   for (let i = 0; i < 10; i++) await Promise.resolve();
   return { nodes, calls, async submit() { await nodes['capture-form'].handlers.submit({ preventDefault() {} }); } };
 }
@@ -34,4 +34,11 @@ test('uncertain replies and every runtime rejection prevent retries', async () =
 test('explicit validation rejection permits correcting the draft', async () => {
   const p = await popup({ ok: false, error: 'Choose an existing group.' }); await p.submit();
   assert.equal(p.nodes.save.disabled, false); assert.equal(p.nodes.refresh.disabled, false); assert.match(p.nodes.status.textContent, /existing group/);
+});
+
+test('public group preference failures cannot turn a completed save into an error', async () => {
+  const p = await popup({ok:true,payload:{result:'SAVED'}}, {local:{get(){throw Error('storage unavailable');},set(){throw Error('storage unavailable');}}});
+  await p.submit();
+  assert.equal(p.nodes.status.textContent, 'Saved to BrowserDock.');
+  assert.equal(p.nodes.save.disabled, true);
 });

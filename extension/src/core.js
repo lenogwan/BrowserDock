@@ -38,11 +38,16 @@ export class Companion {
     });
     this.api.runtime.onMessage?.addListener((message, sender, reply) => {
       if (message?.type === 'BROWSERDOCK_STATUS' && sender.id === this.api.runtime.id) reply({ state: this.status, diagnostics: this.diagnostics });
-      if (['BROWSERDOCK_CAPTURE_CONTEXT', 'BROWSERDOCK_CAPTURE_SAVE'].includes(message?.type) && sender.id === this.api.runtime.id && sender.url === this.api.runtime.getURL('capture.html')) {
+      if (['BROWSERDOCK_QUICK_STATUS', 'BROWSERDOCK_QUICK_ACK'].includes(message?.type) && sender.id === this.api.runtime.id && sender.url === this.api.runtime.getURL('capture.html')) {
+        if (message?.type === 'BROWSERDOCK_QUICK_STATUS') reply({blocked:this.quickSaveUncertain === true});
+        if (message?.type === 'BROWSERDOCK_QUICK_ACK') { this.quickSaveUncertain = false; void Promise.resolve(this.api.action?.setBadgeText({text:''})).catch(()=>{}); void Promise.resolve(this.api.action?.setTitle({title:'Save this tab to BrowserDock'})).catch(()=>{}); reply({ok:true}); }
+      }
+      if (['BROWSERDOCK_CAPTURE_CONTEXT', 'BROWSERDOCK_CAPTURE_SAVE', 'BROWSERDOCK_CAPTURE_BATCH_CONTEXT', 'BROWSERDOCK_CAPTURE_BATCH_SAVE'].includes(message?.type) && sender.id === this.api.runtime.id && sender.url === this.api.runtime.getURL('capture.html')) {
         this.captureTab(message).then(payload => reply({ ok: true, payload }), error => reply({ ok: false, error: error.message, uncertain: error.uncertain === true }));
         return true;
       }
     });
+    this.api.commands?.onCommand?.addListener(command => { if (command === 'quick-save-tab') void this.quickSave(); });
     this.api.alarms.onAlarm.addListener(alarm => {
       if (alarm.name === 'browserdock-reconnect') { this.maintainConnection(); this.scheduleSync(); }
     });
@@ -156,7 +161,7 @@ export class Companion {
     socket.onopen = () => {
       if (this.connection !== ctx) return;
       this.status = 'authenticating';
-      this.send(ctx, { type: 'AUTH', token: ctx.pairing.token, browser: ctx.pairing.browser, instance_id: this.uuid(), capabilities: ['tab_groups_v1'] });
+      this.send(ctx, { type: 'AUTH', token: ctx.pairing.token, browser: ctx.pairing.browser, instance_id: this.uuid(), capabilities: ['tab_groups_v1', 'public_tabs_v1'] });
     };
     socket.onmessage = event => this.receive(ctx, event.data);
     socket.onerror = () => this.drop(ctx, 'socket_error');
@@ -220,6 +225,7 @@ export class Companion {
         ctx.authenticated = true; ctx.authenticatedAt = this.clock.now(); ctx.pong = this.clock.now(); this.clock.clearTimeout(ctx.authTimer);
         ctx.paged = Array.isArray(data.capabilities) && data.capabilities.includes('paged_tabs_v1');
         ctx.capture = Array.isArray(data.capabilities) && data.capabilities.includes('capture_public_v1');
+        ctx.captureBatch = Array.isArray(data.capabilities) && data.capabilities.includes('capture_batch_v1');
         this.status = 'connected';
         this.record('connected', this.outageStarted === null ? undefined : this.clock.now() - this.outageStarted);
         this.outageStarted = null;
@@ -227,6 +233,7 @@ export class Companion {
       }
       return;
     }
+    if (data.action === 'LIST_PUBLIC_TABS') { void this.readPublicTabs(ctx, data); return; }
     if (data.action === 'CAPTURE_RESULT') { this.captureReply(ctx, data); return; }
     if (data.action === 'CANCEL_REQUEST') { if (ctx.seen.has(data.id) && ctx.seen.get(data.id) === null) ctx.cancelled.add(data.id); return; }
     if (data.action === 'CONTAINERS_LIST') { void this.syncContainers(ctx); return; }

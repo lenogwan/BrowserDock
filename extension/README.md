@@ -14,9 +14,9 @@ node --test --test-isolation=none extension/test/*.test.mjs
 
 Packaging with `npm run package:extension` produces:
 
-- `build/extension/browserdock-chromium-v1.0.13.zip`: Chrome / Edge.
-- `build/extension/browserdock-gecko-v1.0.13.zip`: Firefox / Mullvad (manifest at zip root, ready for **Load Temporary Add-on**).
-- `build/extension/browserdock-gecko-v1.0.13.xpi`: byte-identical copy of the Gecko zip for developer installs. Permanent Firefox installation requires a Mozilla-signed package, which this repository does not publish.
+- `build/extension/browserdock-chromium-v1.1.0.zip`: Chrome / Edge.
+- `build/extension/browserdock-gecko-v1.1.0.zip`: Firefox / Mullvad (manifest at zip root, ready for **Load Temporary Add-on**).
+- `build/extension/browserdock-gecko-v1.1.0.xpi`: byte-identical copy of the Gecko zip for developer installs. Permanent Firefox installation requires a Mozilla-signed package, which this repository does not publish.
 
 ### Background connection recovery (v1.0.13)
 
@@ -96,8 +96,14 @@ Automated tests inject browser APIs and WebSocket transports and validate the ge
 
 ## Save the current tab (v1.0.11)
 
-Click the toolbar button to open **Save this tab**. The popup reads the active page and public groups from the connected desktop. Edit the title, choose an existing group or Ungrouped, and save. Groups are created and managed in the dock. Connection settings are available from the popup. Update both desktop and companion; an older desktop shows an update instruction.
+Click the toolbar button to open **Save this tab**. Companion v1.1.0 and app v0.7.0 add **Several tabs**: select public tabs in this window (up to 50 per save), choose a group, then save the selection in one atomic desktop write. Closed, navigated or newly private tabs reject the selection before dispatch. Duplicate destinations are skipped. The popup reads the active page and public groups from the connected desktop. Edit the title, choose an existing group or Ungrouped, and save. Groups are created and managed in the dock. Connection settings are available from the popup. Update both desktop and companion; an older desktop shows an update instruction.
 
 Only public HTTP(S) pages can be captured. Private-window pages are rejected even when private tab access is enabled. Captured bookmarks open with this companion's explicit browser identity and preserve Firefox/Mullvad containers; profile hints are not inferred. Exact destination duplicates leave existing bookmarks unchanged. Drafts are not persisted and are bound to the current connection. Refresh an open popup after reconnecting, changing pairing or restarting the background before saving. An interrupted or timed-out save disables retry in that popup; check the dock before another attempt.
 
-Native acceptance: verify Firefox/Chrome/Edge/Mullvad toolbar popups, group selection and duplicates, private-window rejection, Firefox containers, navigation and connection/pairing changes before Save, disconnected/older desktops, and popup close or background restart during Save. Confirm successful captures appear immediately in the dock and no private page data reaches config or diagnostics.
+The popup remembers the last successfully saved public group ID in local extension preferences; tab drafts, URLs and titles stay in memory. **Alt+Shift+B** quick-saves the active public tab into that group (or Ungrouped if it no longer exists), with Saved/Same/error badge feedback. Change the binding in Firefox’s Manage Extension Shortcuts or Chromium’s `chrome://extensions/shortcuts` ([browser shortcut documentation](https://developer.mozilla.org/en-US/docs/Mozilla/Add-ons/WebExtensions/manifest.json/commands#updating_shortcuts)). An uncertain shortcut save blocks further shortcut and popup saves until you inspect the dock and explicitly acknowledge it in the popup; reopening the popup alone does not acknowledge it.
+
+Settings → Library in the desktop can review fresh public tabs across companion instances and save a workspace group. This read excludes private tabs even when private-tab reuse is enabled, excludes oversized URLs instead of truncating them, and returns up to 200 public tabs per instance. Saving rechecks selected tab IDs, URLs and containers against fresh replies. Older companions request an update; they cannot supply workspace capture data.
+
+Popup layout regression: with Playwright available, run `node extension/test/capture-layout-smoke.mjs` (or supply an external module using `BROWSERDOCK_PLAYWRIGHT_MODULE`). It checks the preferred width with a 1 px initial viewport, delayed background replies, long fields and disconnected feedback; native toolbar sizing is not simulated. `node extension/test/capture-workflows-smoke.mjs` checks remembered groups, selected-tab saves, duplicates, shortcut acknowledgement and uncertain replies with mocked runtime/storage.
+
+Native acceptance: verify Firefox/Chrome/Edge/Mullvad toolbar popups on the first click after browser start and repeated close/open, including delayed desktop replies, toolbar overflow and Windows display scaling. Also verify multi-tab selection, remembered groups, custom shortcut bindings and badge feedback, workspace review across browsers, group selection and duplicates, private-window rejection, Firefox containers, navigation and connection/pairing changes before Save, disconnected/older desktops, and popup close or background restart during Save. Confirm successful captures appear immediately in the dock and no private page data reaches config or diagnostics.

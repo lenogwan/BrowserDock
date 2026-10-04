@@ -10,7 +10,17 @@ export type RouteDetails = { browser_id: string; profile?: string | null; contai
 export type ImportItem = { title: string; url: string; folder: string | null };
 export type ImportSummary = { added: number; duplicates: number; groups_added: number };
 export type BackupPreview = { bookmarks: number; groups: number; has_vault: boolean };
+export type LibraryIssue = {kind:string; id:string; title:string; detail:string; removable:boolean};
+export type PublicTab = {id:number; title:string; url:string; container:string|null; incognito:false};
+export type PublicTabs = {instance_id:string; browser:string; tabs:PublicTab[]};
+export type TabSelection = {instance_id:string; tab_id:number; url:string; container:string|null};
+export type RoutingExplanation = {details:RouteDetails; steps:string[]};
 type Commands = {
+  route_explanation: [{url:string; browserId:string|null; bookmarkId:string|null; bookmarkPrivate:boolean}, RoutingExplanation];
+  library_inspect: [undefined, LibraryIssue[]];
+  library_cleanup: [{selections:{kind:string; id:string}[]}, void];
+  workspace_tabs: [undefined, PublicTabs[]];
+  workspace_save: [{name:string; selected:TabSelection[]}, {group_id:string; added:number}];
   move_bookmarks: [{ ids: string[]; groupId: string | null; private: boolean }, void];
   undo_organization: [{ private: boolean }, void];
   import_bookmarks: [{ items: ImportItem[]; browserId: string; groupId: string | null; folders: boolean; preview: boolean }, ImportSummary];
